@@ -204,6 +204,33 @@ test('a bottom app switcher centres 576-wide windows and hangs one tall tab unde
   assert.equal(g.windowFramed(), false);
 });
 
+test('a fullscreen app fills the panel without chrome rows, frame or depth, in any layout', () => {
+  const panel = { x: 0, y: 0, width: 640, height: 480 };
+  for (const position of ['left', 'right', 'bottom', 'popup']) {
+    const g = geometry();
+    g.settings.appSwitcherPositionSetting.value = position;
+    g.settings.statusBarPositionSetting.value = 'bottom';
+    g.settings.uiDepthSetting.value = '48';
+    assert.equal(g.setAppFullscreen('onboarding', true), true);
+    assert.equal(g.setAppFullscreen('onboarding', true), false);
+    for (const mode of ['min', 'medium', 'max']) assert.deepEqual(g.rect(mode, 'onboarding'), panel, position);
+    assert.equal(g.windowFramed('onboarding'), false);
+    assert.equal(g.statusInSwitcherRow('onboarding'), false);
+    // The switcher overlays it while focused, as in the full-panel mode.
+    assert.equal(g.sidebarStripVisible('window', 'onboarding'), false);
+    assert.equal(g.sidebarStripVisible('sidebar', 'onboarding'), true);
+    assert.equal(g.uiDepth('onboarding'), 0);
+    // Other apps keep the layout and its depth.
+    const depth = position === 'bottom' || position === 'popup' ? 48 : 0;
+    assert.equal(g.uiDepth('launcher'), depth);
+    assert.equal(g.uiDepth(), depth);
+    assert.notDeepEqual(g.rect('min', 'launcher'), panel);
+    assert.equal(g.setAppFullscreen('onboarding', false), true);
+    assert.deepEqual(g.rect('min', 'onboarding'), g.rect('min', 'launcher'));
+    assert.equal(g.uiDepth('onboarding'), depth);
+  }
+});
+
 // The real chrome layer over the given geometry, with platform pieces stubbed:
 // a 4px-per-character font that paints each character as a 2x6 block, up to
 // `notifications` 24px notification icons (keyed n0, n1, ...), and a phone
@@ -294,6 +321,25 @@ test('a bottom app switcher frames the foreground window\'s content in a rounded
   // No frame in the full-panel mode.
   g.settings.displayModeSetting.value = '640x480';
   assert.equal(chrome.paintParts().flatMap((p) => frames(p.image)).length, 0);
+});
+
+test('over a fullscreen window the chrome draws only the switcher, and only while it has focus', () => {
+  for (const position of ['bottom', 'popup', 'left']) {
+    const g = geometry();
+    g.settings.appSwitcherPositionSetting.value = position;
+    g.settings.statusBarPositionSetting.value = position === 'left' ? 'top' : 'bottom';
+    g.setAppFullscreen('onboarding', true);
+    const { chrome, state } = chromeLayer(g, { windows: 2, notifications: 1 });
+    state.foregroundAppId = 'onboarding';
+    assert.equal(chrome.paintParts().length, 0, position);
+    assert.equal(chrome.paint().pixels.some((value) => value !== 0), false, position);
+    state.focus = 'sidebar';
+    const parts = chrome.paintParts();
+    // No status bar (key 2), not even in a bottom row.
+    assert.equal(parts.length, 1, position);
+    assert.notEqual(parts[0].shellKey, 2, position);
+    if (position === 'bottom') assert.deepEqual([parts[0].x, parts[0].y, parts[0].image.width], [0, 444, 640]);
+  }
 });
 
 test('the launcher\'s tab lines up with the window frame, whose corner squares to meet it', () => {

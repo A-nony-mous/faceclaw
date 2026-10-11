@@ -8,7 +8,7 @@ import { type MenuItem } from "../menu";
 import { WindowMenuLayer } from "../window-menu";
 import { windowIcon } from "./chrome-layer";
 import { type IconName } from "../../graphics/icons";
-import { appViewportSize, type WindowHeightMode } from "./geometry";
+import { appViewportSize, setAppFullscreen, type WindowHeightMode } from "./geometry";
 import { shell, type ShellWindow } from "./shell";
 
 /**
@@ -30,6 +30,8 @@ export type InProcessWindowOptions = {
   closeable: boolean;
   /** Window height: the standard 288px band ("min", default) or full screen ("max"). */
   heightMode?: WindowHeightMode;
+  /** Open fullscreen: the whole panel, without the status bar (see geometry.ts isFullscreen). */
+  fullscreen?: boolean;
   /**
    * The window's tap-then-hold context menu: app-specific entries only (the
    * shared Focus app switcher / Voice input / Close window entries live in
@@ -73,6 +75,12 @@ export type InProcessWindow = {
   requestRender: () => void;
   /** Change the window's height band at runtime (resizes the viewport + surface). */
   setHeightMode: (mode: WindowHeightMode) => void;
+  /**
+   * Enter or leave fullscreen at runtime (resizes the viewport + surface).
+   * It is per app (geometry.ts isFullscreen), so an app with several
+   * windows switches them all.
+   */
+  setFullscreen: (fullscreen: boolean) => void;
 };
 
 /** The controller-provided plumbing common to every in-process app window. */
@@ -102,10 +110,12 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
   // Handed to app code as a bare callback, so it takes no arguments.
   const requestRender = () => renderInNewFrame(0);
   let heightMode = options.heightMode ?? "min";
+  setAppFullscreen(options.appId, options.fullscreen ?? false);
+  const viewportSize = () => appViewportSize(heightMode, options.appId);
   const stack = new LayerStack(
     options.baseLayer,
     { ...options.actions, requestRender },
-    appViewportSize(heightMode),
+    viewportSize(),
     () => shell.isWindowFocused(options.windowId),
   );
 
@@ -172,6 +182,7 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
     hasAppMenu: () => appMenuItems().length > 0,
     close: () => {
       closed = true;
+      setAppFullscreen(options.appId, false);
       // Fire onRemoved for any pushed layers so they release resources (e.g. a
       // demo that enabled a hardware stream) even when closed from within.
       stack.clearToBase();
@@ -210,7 +221,7 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
     },
     requestRender,
     relayout: () => {
-      stack.setBaseSize(appViewportSize(heightMode));
+      stack.setBaseSize(viewportSize());
       options.reconfigureSurface?.(heightMode);
       requestRender();
     },
@@ -226,15 +237,21 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
       options.onForegroundChanged?.(foreground);
     },
   };
+  const resize = () => {
+    stack.setBaseSize(viewportSize());
+    options.reconfigureSurface?.(heightMode);
+    requestRender();
+  };
   const setHeightMode = (mode: WindowHeightMode) => {
     if (heightMode === mode) return;
     heightMode = mode;
     window.heightMode = mode;
-    stack.setBaseSize(appViewportSize(mode));
-    options.reconfigureSurface?.(mode);
-    requestRender();
+    resize();
   };
-  return { window, stack, requestRender, setHeightMode };
+  const setFullscreen = (fullscreen: boolean) => {
+    if (!closed && setAppFullscreen(options.appId, fullscreen)) resize();
+  };
+  return { window, stack, requestRender, setHeightMode, setFullscreen };
 }
 
 /**

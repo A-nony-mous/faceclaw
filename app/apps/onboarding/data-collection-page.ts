@@ -13,6 +13,7 @@ const LABEL_GAP = 24;
 
 /** None / Minimal / Full, each with a one-line summary; a tap saves the selected level. */
 export class DataCollectionPage implements OnboardingPage {
+  readonly fullscreen = true;
   /** Width of the level-name column, measured each paint. */
   private labelColumnWidth = 0;
   private readonly menu = new Menu<DataCollectionLevel>({
@@ -31,9 +32,9 @@ export class DataCollectionPage implements OnboardingPage {
   paint(image: GrayImage, focused: boolean): void {
     const top = drawPageHeading(
       image,
-      "Faceclaw statistics",
+      "Data Sharing",
       (global.isIOS ? "If using TestFlight, crash/usage reports cannot be disabled here. " : "") +
-        "Choose optional Faceclaw statistics. Change later in Settings > Privacy.",
+        "Choose how much data you want to share. Change later in Settings > Privacy.",
       3,
     ) + CONTENT_GAP;
     const body = onboardingFont("body");

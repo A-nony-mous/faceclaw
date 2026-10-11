@@ -698,9 +698,9 @@ const DATA_COLLECTION_LABELS: Record<DataCollectionLevel, string> = {
 // What each level collects is set out in app/analytics/analytics-store.ts and
 // the privacy policy (PRIVACY); keep these in step with both.
 const DATA_COLLECTION_SUMMARIES: Record<DataCollectionLevel, string> = {
-  none: "No Faceclaw statistics",
-  minimal: "Version, devices, connection reliability",
-  full: "Also settings and API-key presence",
+  none: "Disable all data sharing",
+  minimal: "Version, devices, and connection reliability statistics",
+  full: "More detailed usage data",
 };
 
 /** One-line summary of what a data-collection level sends (onboarding, settings). */

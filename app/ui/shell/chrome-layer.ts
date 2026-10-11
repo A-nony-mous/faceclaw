@@ -27,6 +27,7 @@ import { scrollToKeepSelectionVisible } from "../menu";
 import { lineStep } from "../metrics";
 import {
   appViewportRect,
+  isFullscreen,
   MIN_WINDOW_HEIGHT,
   minWindowTop,
   SHELL_OPAQUE_BLACK,
@@ -275,14 +276,15 @@ type StatusBarPlacement = { left: number; right: number; top: number; contentTop
 
 /**
  * The status bar's placement for the foreground window, or null when it
- * isn't drawn as a bar: when it shares a bottom switcher row, or when it
- * overlays the window (geometry.ts statusBarOverlays) and the popup
- * switcher isn't up. An overlaying bar sits inside a window frame, whose
- * side runs along its outer row, so it keeps its divider.
+ * isn't drawn as a bar: when the window is fullscreen, when it shares a
+ * bottom switcher row, or when it overlays the window (geometry.ts
+ * statusBarOverlays) and the popup switcher isn't up. An overlaying bar
+ * sits inside a window frame, whose side runs along its outer row, so it
+ * keeps its divider.
  */
 function statusBarPlacement(state: ShellChromeState): StatusBarPlacement | null {
   const appId = state.foregroundAppId;
-  if (statusInSwitcherRow(appId)) return null;
+  if (isFullscreen(appId) || statusInSwitcherRow(appId)) return null;
   const overlays = statusBarOverlays();
   if (overlays && !sidebarStripVisible(state.focus, appId)) return null;
   const { left, right } = topBarSpan(state);

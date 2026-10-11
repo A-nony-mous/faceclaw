@@ -15,6 +15,14 @@ export type OnboardingNav = {
  * viewport and handles every other gesture.
  */
 export interface OnboardingPage {
+  /**
+   * Show the page fullscreen: the whole 640×480 panel, with the app switcher
+   * and status bar hidden. Otherwise it is an ordinary window in the
+   * chosen layout.
+   */
+  readonly fullscreen?: boolean;
+  /** Whether the page belongs in the flow right now; skipped both ways when false. */
+  applies?(): boolean;
   /** The page became current, going forward or back. */
   enter?(): void;
   paint(image: GrayImage, focused: boolean): void;

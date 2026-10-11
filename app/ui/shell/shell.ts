@@ -831,10 +831,13 @@ class Shell {
 
   /**
    * Paint the shell surface: transparent chrome, or all-transparent when
-   * asleep. The scene also carries the whole display's stereo depth.
+   * asleep. The scene also carries the whole display's stereo depth (none
+   * under a fullscreen window).
    */
   paintScene(): Uint8Array {
-    return this.screenOn ? encodeShellScene(this.stack.paintUndimmed(), uiDepth()) : encodeShellScene([]);
+    return this.screenOn
+      ? encodeShellScene(this.stack.paintUndimmed(), uiDepth(this.foregroundWindow()?.appId))
+      : encodeShellScene([]);
   }
 
   paintSurface(): Plane[] {

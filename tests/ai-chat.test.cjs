@@ -271,7 +271,7 @@ function shellEnv({ wakeAction = 'voice-input', skipConfirmation = false } = {})
     '../../graphics/image': images, '../../native/frame-timings': timings,
     '../../util/render-freshness': { beginRenderPass() {}, endRenderPass: () => false },
     '../layers': layers, '../window-menu': { WindowMenuLayer: Menu },
-    './chrome-layer': { windowIcon: () => () => null }, './geometry': { appViewportSize: () => ({ width: 576, height: 260 }) },
+    './chrome-layer': { windowIcon: () => () => null }, './geometry': { appViewportSize: () => ({ width: 576, height: 260 }), setAppFullscreen: () => false },
     './shell': { shell },
   });
   const input = [], menus = [];

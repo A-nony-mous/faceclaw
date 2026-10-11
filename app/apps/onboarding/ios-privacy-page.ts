@@ -7,6 +7,7 @@ import { drawPageHeading, PAGE_X, type OnboardingNav, type OnboardingPage } from
 
 /** Paginate the notice so no disclosure is silently clipped on a short glasses viewport. */
 export class IosPrivacyPage implements OnboardingPage {
+  readonly fullscreen = true;
   private page = 0;
   private pageCount = 1;
 

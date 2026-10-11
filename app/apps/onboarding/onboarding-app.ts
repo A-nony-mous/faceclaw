@@ -5,7 +5,9 @@ import { createInProcessWindow, type InProcessAppOptions, type InProcessWindow }
 import { shell } from "../../ui/shell/shell";
 import { findSoundEffect, playSoundEffect } from "../../ui/sound-effects";
 import { DataCollectionPage } from "./data-collection-page";
+import { DepthPage } from "./depth-page";
 import { IosPrivacyPage } from "./ios-privacy-page";
+import { LayoutPage } from "./layout-page";
 import { markGlassesOnboardingFinished, ONBOARDING_APP_ID } from "./onboarding-progress";
 import type { OnboardingPage } from "./onboarding-page";
 import { TextSizePage } from "./text-size-page";
@@ -25,7 +27,7 @@ export function createOnboardingAppWindow(options: InProcessAppOptions): InProce
   const pages: OnboardingPage[] = [
     new WelcomePage(), new TextSizePage(),
     ...(global.isIOS ? [new IosPrivacyPage()] : []),
-    new DataCollectionPage(),
+    new DataCollectionPage(), new LayoutPage(), new DepthPage(),
   ];
   const app = createInProcessWindow({
     appId: ONBOARDING_APP_ID,
@@ -34,11 +36,17 @@ export function createOnboardingAppWindow(options: InProcessAppOptions): InProce
     iconLetter: "On",
     icon: "sparkles",
     closeable: true,
+    fullscreen: pages[0]!.fullscreen,
     actions: options.actions,
-    baseLayer: new OnboardingLayer(pages, () => {
-      markGlassesOnboardingFinished();
-      shell.closeWindow(ONBOARDING_WINDOW_ID);
-    }),
+    baseLayer: new OnboardingLayer(
+      pages,
+      // Only called on page changes, by when `app` is set.
+      (fullscreen) => app.setFullscreen(fullscreen),
+      () => {
+        markGlassesOnboardingFinished();
+        shell.closeWindow(ONBOARDING_WINDOW_ID);
+      },
+    ),
     submitFrame: options.submitFrame,
     setSurfaceVisible: options.setSurfaceVisible,
     removeSurface: options.removeSurface,
@@ -61,15 +69,17 @@ function playWelcomeSound(actions: LayerActions): void {
 }
 
 /**
- * Hosts the current page. Double-click steps back a page, or leaves the app
- * from the first one (the standard yield to the app switcher); every other
- * gesture goes to the page.
+ * Hosts the current page, fullscreen or not as it asks. Double-click steps
+ * back a page, or leaves the app from the first one (the standard yield to
+ * the app switcher); every other gesture goes to the page. Pages that don't
+ * apply (Depth beside a side-strip app switcher) are skipped either way.
  */
-class OnboardingLayer implements Layer {
+export class OnboardingLayer implements Layer {
   private index = 0;
 
   constructor(
     private readonly pages: readonly OnboardingPage[],
+    private readonly setFullscreen: (fullscreen: boolean) => void,
     private readonly finish: () => void,
   ) {
     pages[0]!.enter?.();
@@ -84,20 +94,32 @@ class OnboardingLayer implements Layer {
 
   async handleInput(event: InputEvent): Promise<void> {
     if (event.type === "double-click") {
-      if (this.index === 0) shell.yieldFocusToSidebar();
-      else this.show(this.index - 1);
+      const previous = this.applicableIndex(this.index - 1, -1);
+      if (previous === null) shell.yieldFocusToSidebar();
+      else this.show(previous);
       return;
     }
     await this.pages[this.index]!.handleInput(event, { next: () => this.next() });
   }
 
   private next(): void {
-    if (this.index + 1 < this.pages.length) this.show(this.index + 1);
-    else this.finish();
+    const next = this.applicableIndex(this.index + 1, 1);
+    if (next === null) this.finish();
+    else this.show(next);
+  }
+
+  /** The first page from `index` on in direction `step` that applies, if any. */
+  private applicableIndex(index: number, step: 1 | -1): number | null {
+    for (; index >= 0 && index < this.pages.length; index += step) {
+      if (this.pages[index]!.applies?.() ?? true) return index;
+    }
+    return null;
   }
 
   private show(index: number): void {
     this.index = index;
-    this.pages[index]!.enter?.();
+    const page = this.pages[index]!;
+    page.enter?.();
+    this.setFullscreen(page.fullscreen ?? false);
   }
 }

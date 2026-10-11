@@ -4,7 +4,8 @@ import { ONBOARDING_APP_ID } from "./onboarding-progress";
 
 /**
  * First-run setup on the glasses: welcome, text size, data-collection
- * preference. The connection controllers open it on their own when it is
+ * preference, layout (app switcher position) and, for layouts that have
+ * one, depth. The connection controllers open it on their own when it is
  * due (claimGlassesOnboardingAutoLaunch); the launcher entry reruns it.
  */
 const onboardingApp: AppDefinition = {

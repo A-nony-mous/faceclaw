@@ -60,9 +60,33 @@ export function displayMode(appId?: string): DisplayModeSetting {
   return mode === "global" || mode === "default" ? displayModeSetting.get() : mode;
 }
 
-/** The full-panel mode: windows fill the panel; the switcher overlays them only while it has focus. */
+/**
+ * Apps whose windows are fullscreen right now: the whole panel, with no
+ * status bar, window frame or room kept for the switcher (which overlays
+ * them only while it has focus, as in the full-panel mode), at depth 0. An
+ * app switches it at runtime (InProcessWindow.setFullscreen; the onboarding's
+ * first pages), so it is per app, like the per-app display modes.
+ */
+const fullscreenApps = new Set<string>();
+
+/** Mark an app's windows fullscreen or not; true if that changed anything. */
+export function setAppFullscreen(appId: string, fullscreen: boolean): boolean {
+  if (fullscreenApps.has(appId) === fullscreen) return false;
+  if (fullscreen) fullscreenApps.add(appId);
+  else fullscreenApps.delete(appId);
+  return true;
+}
+
+export function isFullscreen(appId?: string): boolean {
+  return appId !== undefined && fullscreenApps.has(appId);
+}
+
+/**
+ * The full-panel mode (or a fullscreen app): windows fill the panel; the
+ * switcher overlays them only while it has focus.
+ */
 function fullPanel(appId?: string): boolean {
-  return displayMode(appId) === "640x480";
+  return isFullscreen(appId) || displayMode(appId) === "640x480";
 }
 
 /**
@@ -176,9 +200,10 @@ export function statusBarOverlays(): boolean {
  * Rows the shell draws along one edge of each window's content: the status
  * bar's (the top bar, as a header), the frame's side, or none. A bottom
  * switcher row's band has no footer: the frame's bottom side is the row's
- * top edge.
+ * top edge. A fullscreen window has neither.
  */
 function windowEdgeHeight(edge: "top" | "bottom", appId?: string): number {
+  if (isFullscreen(appId)) return 0;
   if (switcherPosition() !== "popup") {
     return edge === "bottom" ? 0 : statusInSwitcherRow(appId) ? 1 : TOP_BAR_HEIGHT;
   }
@@ -261,17 +286,20 @@ export function appViewportLeft(appId?: string): number {
  * the firmware's depth units; the shell scene carries it to the compositor,
  * which shifts the screen and everything drawn over it per lens. Only with
  * the switcher at the bottom or a popup, where the windows' side margins,
- * less the window frame's pixel, leave room for the shift.
+ * less the window frame's pixel, leave room for the shift; not while the
+ * given (foreground) app is fullscreen, which has no margins.
  */
-export function uiDepth(): number {
-  return sideStrip() ? 0 : Number(uiDepthSetting.get());
+export function uiDepth(appId?: string): number {
+  return sideStrip() || isFullscreen(appId) ? 0 : Number(uiDepthSetting.get());
 }
 
 /**
  * Explicit app sizes (including Use global) replace the requested height.
  * The default keeps legacy per-window heights, such as tall terminal sessions.
+ * A fullscreen app is always the whole height.
  */
 export function effectiveHeightMode(mode: WindowHeightMode, appId?: string): WindowHeightMode {
+  if (isFullscreen(appId)) return "max";
   return displayMode(appId) === "576x288" ? (appDisplayMode(appId) === "default" ? mode : "min") : "max";
 }
 
