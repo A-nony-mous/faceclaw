@@ -13,7 +13,7 @@ const LABEL_GAP = 24;
 
 /** None / Minimal / Full, each with a one-line summary; a tap saves the selected level. */
 export class DataCollectionPage implements OnboardingPage {
-  readonly fullscreen = true;
+  readonly immersive = true;
   /** Width of the level-name column, measured each paint. */
   private labelColumnWidth = 0;
   private readonly menu = new Menu<DataCollectionLevel>({

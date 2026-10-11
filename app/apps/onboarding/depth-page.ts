@@ -13,7 +13,7 @@ const COLUMN_WIDTH = 220;
 
 /**
  * The whole display's stereo depth, after a layout that has one (Bottom or
- * Popup). Not fullscreen, so the page sits in the chosen layout, and the
+ * Popup). Not immersive, so the page sits in the chosen layout, and the
  * depth is saved as the selection moves: the shell shifts everything with
  * it, which is the only way to see the difference.
  */

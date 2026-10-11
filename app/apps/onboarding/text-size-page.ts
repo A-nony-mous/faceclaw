@@ -48,7 +48,7 @@ type Face =
  * while scrolling.
  */
 export class TextSizePage implements OnboardingPage {
-  readonly fullscreen = true;
+  readonly immersive = true;
   private face: Face = { kind: "fixed", label: "Terminus" };
   private readonly sizeMenu = new Menu<number>({
     wrap: false,

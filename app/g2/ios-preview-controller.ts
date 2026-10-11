@@ -44,7 +44,7 @@ import { noopLayerActions, type LayerActions } from '../ui/layers'
 import { TextViewerLayer } from '../apps/files/text-viewer'
 import { shell, rawInputEventToInputEvent, type ShellWindow } from '../ui/shell/shell'
 import { appViewportRect, isOnSwitcherEdge, sidebarStripVisible } from '../ui/shell/geometry'
-import { DISPLAY_MODE_VALUES, displayModeLabel, displayModeSetting, onAnySettingChanged,
+import { onAnySettingChanged,
   previewColorSetting, lockScreenEnabledSetting, getBrightnessPreferences, getStringSettingById,
   nightscoutSiteUrlSetting, nightscoutApiTokenSetting } from '../ui/dashboard-settings'
 import type { PhoneGesture } from '../phone-ui/phone-gestures'
@@ -658,11 +658,6 @@ export class IosPreviewController {
     this.appHosts.set(appId, host)
     return host
   }
-  cycleDisplayMode(): void {
-    const values = DISPLAY_MODE_VALUES
-    displayModeSetting.set(values[(values.indexOf(displayModeSetting.get()) + 1) % values.length])
-  }
-  get displayModeLabel(): string { return displayModeLabel(displayModeSetting.get()) }
   get connectionState(): SessionState | null { return this.sessionCreated ? this.state : null }
   get connectionDetails(): string {
     const state = this.connectionState

@@ -72,7 +72,7 @@ import { loadPersistedOpenApps, savePersistedOpenApps } from "../ui/shell/open-a
 import { appViewportRect, isOnSwitcherEdge, sidebarStripVisible, type WindowHeightMode } from "../ui/shell/geometry";
 import { type LayerActions, type TextSettingsEditToggle } from "../ui/layers";
 import { type KeyboardInputSession } from "../ui/shell/keyboard-input";
-import { appSwitcherPositionSetting, statusBarPositionSetting, statusBarVisibilitySetting, windowBorderSetting, assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, getBrightnessPreferences, displayModeSetting, navigateDisplayModeSetting, navigateVerticalPositionSetting, terminalDisplayModeSetting, terminalVerticalPositionSetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, ringConnectionModeSetting, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, suspendEvenHubWhenScreenOffSetting, verticalPositionSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
+import { appSwitcherPositionSetting, statusBarPositionSetting, statusBarVisibilitySetting, windowBorderSetting, assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, getBrightnessPreferences, displayLayoutSetting, navigateDisplayLayoutSetting, terminalDisplayLayoutSetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, ringConnectionModeSetting, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, suspendEvenHubWhenScreenOffSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
 import { isIgnoringBatteryOptimizations, requestIgnoreBatteryOptimizations } from "../native/battery-optimization";
 import {
   getInstalledEvenHubAppById,
@@ -184,24 +184,26 @@ const EVEN_APP_DETECTED_MESSAGE =
 const LAUNCHABLE_APPS = ALL_APPS.filter((app) => app.showInLauncher !== false);
 
 /**
- * The global settings window viewport sizes depend on: the display mode,
- * whether the app switcher takes width beside windows, height below them
- * or neither (a popup), and the chrome rows each window loses to it: below
- * them, whether the status bar joins the row (dropping the top bar); with a
- * popup, whether the status bar keeps rows of its own and the window frame
- * (where the status bar goes only moves windows).
+ * The global settings window viewport sizes depend on: the display mode's
+ * size (a band's position only moves windows), whether the app switcher
+ * takes width beside windows, height below them or neither (a popup), and
+ * the chrome rows each window loses to it: below them, whether the status
+ * bar joins the row (dropping the top bar); with a popup, whether the
+ * status bar keeps rows of its own and the window frame (where the status
+ * bar goes only moves windows).
  */
 function viewportSizesKey(): string {
   const position = appSwitcherPositionSetting.get();
   const switcher = position === "bottom" ? `row|${statusBarPositionSetting.get()}`
     : position === "popup" ? `popup|${statusBarVisibilitySetting.get()}|${windowBorderSetting.get()}`
     : "strip";
-  return `${displayModeSetting.get()}|${switcher}`;
+  const layout = displayLayoutSetting.get();
+  return `${layout.startsWith("band-") ? "band" : layout}|${switcher}`;
 }
 
 /** The global settings that move window surfaces without resizing them. */
 function windowPlacementKey(): string {
-  return `${verticalPositionSetting.get()}|${appSwitcherPositionSetting.get()}|${statusBarPositionSetting.get()}`;
+  return `${displayLayoutSetting.get()}|${appSwitcherPositionSetting.get()}|${statusBarPositionSetting.get()}`;
 }
 
 function createInitialDisplayPreview(): ImageSource | null {
@@ -449,8 +451,8 @@ class DashboardController {
       this.pushFirmwareDebugFlags();
       this.pushBrightness();
       this.syncEvenHubScreenOffSetting();
-      // Display mode first: a reflow repositions every surface too, so the
-      // vertical-position check after it then has nothing left to do.
+      // Display mode size first: a reflow repositions every surface too, so
+      // the band-position check after it then has nothing left to do.
       this.applyDisplayModeIfChanged();
       this.applyVerticalPositionIfChanged();
       this.applyAppLayoutsIfChanged();
@@ -530,7 +532,7 @@ class DashboardController {
     });
   }
 
-  // Vertical-position changes (and moving the app switcher between the left
+  // Band position changes (and moving the app switcher between the left
   // and right edges, or a popup switcher's status bar between the top and
   // bottom) move every window surface and the chrome that aligns with them;
   // the values are tracked so unrelated setting changes don't trigger a full
@@ -540,7 +542,7 @@ class DashboardController {
   private lastViewportSizes = viewportSizesKey();
 
   /**
-   * Display mode changed (Settings > Display, or the phone page's picker),
+   * Display mode size changed (Settings > Display, or the phone page's picker),
    * or the app switcher or its chrome changed what windows lose to them
    * (see viewportSizesKey): every window's viewport size changes. In-process windows re-measure in place; workers
    * that support resizing receive the new viewport. Other worker windows are
@@ -586,8 +588,8 @@ class DashboardController {
 
   private appLayouts(): Record<string, string> {
     return {
-      navigate: `${navigateDisplayModeSetting.get()}:${navigateVerticalPositionSetting.get()}`,
-      terminal: `${terminalDisplayModeSetting.get()}:${terminalVerticalPositionSetting.get()}`,
+      navigate: navigateDisplayLayoutSetting.get(),
+      terminal: terminalDisplayLayoutSetting.get(),
     };
   }
 

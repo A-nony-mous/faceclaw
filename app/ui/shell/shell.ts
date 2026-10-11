@@ -271,7 +271,7 @@ class ShellOverlayMenuLayer extends MenuLayer {
     // Aligned to the min-height window band (like the sidebar), wherever the
     // vertical position setting currently puts it; centered over the
     // application area, i.e. the part of the screen beside a side strip
-    // (the whole width with a bottom row, or in the full-panel mode, where
+    // (the whole width with a bottom row, or over an immersive window, where
     // the strip overlays).
     const width = 272;
     const area = appViewportRect("min");
@@ -832,7 +832,7 @@ class Shell {
   /**
    * Paint the shell surface: transparent chrome, or all-transparent when
    * asleep. The scene also carries the whole display's stereo depth (none
-   * under a fullscreen window).
+   * under a Full Screen or immersive window).
    */
   paintScene(): Uint8Array {
     return this.screenOn

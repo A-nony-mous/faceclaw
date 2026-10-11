@@ -6,6 +6,7 @@ import { shell } from "../../ui/shell/shell";
 import { findSoundEffect, playSoundEffect } from "../../ui/sound-effects";
 import { DataCollectionPage } from "./data-collection-page";
 import { DepthPage } from "./depth-page";
+import { DisplayModePage } from "./display-mode-page";
 import { IosPrivacyPage } from "./ios-privacy-page";
 import { LayoutPage } from "./layout-page";
 import { markGlassesOnboardingFinished, ONBOARDING_APP_ID } from "./onboarding-progress";
@@ -27,7 +28,7 @@ export function createOnboardingAppWindow(options: InProcessAppOptions): InProce
   const pages: OnboardingPage[] = [
     new WelcomePage(), new TextSizePage(),
     ...(global.isIOS ? [new IosPrivacyPage()] : []),
-    new DataCollectionPage(), new LayoutPage(), new DepthPage(),
+    new DataCollectionPage(), new LayoutPage(), new DepthPage(), new DisplayModePage(),
   ];
   const app = createInProcessWindow({
     appId: ONBOARDING_APP_ID,
@@ -36,12 +37,12 @@ export function createOnboardingAppWindow(options: InProcessAppOptions): InProce
     iconLetter: "On",
     icon: "sparkles",
     closeable: true,
-    fullscreen: pages[0]!.fullscreen,
+    immersive: pages[0]!.immersive,
     actions: options.actions,
     baseLayer: new OnboardingLayer(
       pages,
       // Only called on page changes, by when `app` is set.
-      (fullscreen) => app.setFullscreen(fullscreen),
+      (immersive) => app.setImmersive(immersive),
       () => {
         markGlassesOnboardingFinished();
         shell.closeWindow(ONBOARDING_WINDOW_ID);
@@ -69,7 +70,7 @@ function playWelcomeSound(actions: LayerActions): void {
 }
 
 /**
- * Hosts the current page, fullscreen or not as it asks. Double-click steps
+ * Hosts the current page, immersive or not as it asks. Double-click steps
  * back a page, or leaves the app from the first one (the standard yield to
  * the app switcher); every other gesture goes to the page. Pages that don't
  * apply (Depth beside a side-strip app switcher) are skipped either way.
@@ -79,7 +80,7 @@ export class OnboardingLayer implements Layer {
 
   constructor(
     private readonly pages: readonly OnboardingPage[],
-    private readonly setFullscreen: (fullscreen: boolean) => void,
+    private readonly setImmersive: (immersive: boolean) => void,
     private readonly finish: () => void,
   ) {
     pages[0]!.enter?.();
@@ -120,6 +121,6 @@ export class OnboardingLayer implements Layer {
     this.index = index;
     const page = this.pages[index]!;
     page.enter?.();
-    this.setFullscreen(page.fullscreen ?? false);
+    this.setImmersive(page.immersive ?? false);
   }
 }

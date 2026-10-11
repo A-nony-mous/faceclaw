@@ -44,11 +44,11 @@ function recorder(width, height) {
   };
 }
 
-test('the layout page fits four 40%-wide diagrams with captions on the fullscreen panel', () => {
+test('the layout page fits four 40%-wide diagrams with captions on the immersive panel', () => {
   const { load } = harness();
   const { LayoutPage } = load('app/apps/onboarding/layout-page.ts');
   const page = new LayoutPage();
-  assert.equal(page.fullscreen, true);
+  assert.equal(page.immersive, true);
   const image = recorder(640, 480);
   page.paint(image, true);
   // Each diagram's outline spans the display's width at 40%.
@@ -162,7 +162,7 @@ test('the depth page follows layouts that have depth, sits in the layout, and ap
   });
   const { DepthPage } = mocks('app/apps/onboarding/depth-page.ts');
   const page = new DepthPage();
-  assert.equal(page.fullscreen, undefined);
+  assert.equal(page.immersive, undefined);
   for (const [position, applies] of [['left', false], ['right', false], ['bottom', true], ['popup', true]]) {
     settings.appSwitcherPositionSetting.value = position;
     assert.equal(page.applies(), applies, position);
@@ -178,12 +178,12 @@ test('the depth page follows layouts that have depth, sits in the layout, and ap
   assert.equal(next, 1);
 });
 
-test('the flow switches fullscreen per page and skips pages that do not apply, both ways', async () => {
+test('the flow switches immersive mode per page and skips pages that do not apply, both ways', async () => {
   const shell = { yields: 0, yieldFocusToSidebar() { this.yields++; } };
   const load = loader({}, {
     '../../graphics/image': { GrayImage: class {} },
     '../../ui/shell/in-process-window': {}, '../../ui/shell/shell': { shell }, '../../ui/sound-effects': {},
-    './data-collection-page': {}, './depth-page': {}, './ios-privacy-page': {}, './layout-page': {},
+    './data-collection-page': {}, './depth-page': {}, './display-mode-page': {}, './ios-privacy-page': {}, './layout-page': {},
     './onboarding-progress': {}, './text-size-page': {}, './welcome-page': {},
   });
   const { OnboardingLayer } = load('app/apps/onboarding/onboarding-app.ts');
@@ -191,27 +191,73 @@ test('the flow switches fullscreen per page and skips pages that do not apply, b
   const entered = [];
   const page = (name, extra) => ({ ...extra, enter: () => entered.push(name),
     handleInput: (event, nav) => { if (event.type === 'click') nav.next(); } });
-  const fullscreen = [];
+  const immersive = [];
   let finished = 0;
   const layer = new OnboardingLayer([
-    page('welcome', { fullscreen: true }), page('layout', { fullscreen: true }),
+    page('welcome', { immersive: true }), page('layout', { immersive: true }),
     page('depth', { applies: () => depthApplies }), page('voice', {}),
-  ], (value) => fullscreen.push(value), () => finished++);
+  ], (value) => immersive.push(value), () => finished++);
   const input = (type) => layer.handleInput({ type });
   await input('click');
   await input('click');
   assert.deepEqual(entered, ['welcome', 'layout', 'voice'], 'depth skipped going forward');
-  assert.deepEqual(fullscreen, [true, false]);
+  assert.deepEqual(immersive, [true, false]);
   await input('double-click');
   assert.deepEqual(entered.at(-1), 'layout', 'and going back');
   depthApplies = true;
   await input('click');
   await input('click');
   assert.deepEqual(entered.slice(-2), ['depth', 'voice']);
-  assert.deepEqual(fullscreen, [true, false, true, false, false]);
+  assert.deepEqual(immersive, [true, false, true, false, false]);
   await input('click');
   assert.equal(finished, 1);
   for (let i = 0; i < 4; i++) await input('double-click');
   assert.equal(entered.at(-1), 'welcome');
   assert.equal(shell.yields, 1, 'double-click on the first page leaves the app');
+});
+
+test('the display mode page offers Full Screen only where the layout allows it, and applies the mode as it scrolls', () => {
+  const values = ['band-top', 'band-high', 'band-middle', 'band-low', 'band-bottom', 'tall', 'fullscreen'];
+  const settings = {
+    appSwitcherPositionSetting: setting('bottom', ['left', 'right', 'bottom', 'popup']),
+    displayLayoutSetting: { ...setting('fullscreen', values), displayValue: (v) => v,
+      isDisabled: (v) => v === 'fullscreen' && ['left', 'right'].includes(settings.appSwitcherPositionSetting.value) },
+  };
+  const menu = { selected: null, items: [], setItems(items, index) { this.items = items; this.selected = index; },
+    get selectedItem() { return this.items[this.selected] ?? null; }, paint(image, box) { this.box = box; },
+    async handleInput(event) { this.selected = Math.max(0, Math.min(this.items.length - 1, this.selected + (event.type === 'scroll-down' ? 1 : -1))); } };
+  const load = loader({}, {
+    './onboarding-fonts': { onboardingFont: font },
+    '../../ui/dashboard-settings': settings,
+    '../../ui/menu-core': { Menu: class { constructor() { return menu; } } },
+    '../../ui/metrics': { LIST_ROW_TEXT_INSET: 4, listRowHeight: (f) => f.lineHeight + 8 },
+  });
+  const { DisplayModePage } = load('app/apps/onboarding/display-mode-page.ts');
+  const page = new DisplayModePage();
+  // An ordinary window, which the mode being applied resizes.
+  assert.equal(page.immersive, undefined);
+  page.enter();
+  assert.deepEqual(Array.from(menu.items), values);
+  assert.equal(menu.selectedItem, 'fullscreen');
+  // The selected mode's description sits beside the list, within the window (a band's).
+  const image = recorder(576, 260);
+  page.paint(image, true);
+  const description = image.calls.filter((call) => call.kind === 'text' && call.x >= menu.box.x + menu.box.width);
+  assert.match(description.map((call) => call.text).join(' '), /Depth is turned off/);
+  let next = 0;
+  const nav = { next: () => next++ };
+  page.handleInput({ type: 'scroll-up' }, nav);
+  page.handleInput({ type: 'scroll-up' }, nav);
+  assert.deepEqual(settings.displayLayoutSetting.writes, ['tall', 'band-bottom'], 'applied as it scrolls');
+  page.handleInput({ type: 'click' }, nav);
+  assert.equal(next, 1);
+  assert.deepEqual(settings.displayLayoutSetting.writes, ['tall', 'band-bottom']);
+  // Beside a side strip, a saved Full Screen shows as Tall, and is saved as such on a tap.
+  settings.displayLayoutSetting.value = 'fullscreen';
+  settings.appSwitcherPositionSetting.value = 'left';
+  page.enter();
+  assert.deepEqual(Array.from(menu.items), values.slice(0, 6));
+  assert.equal(menu.selectedItem, 'tall');
+  page.handleInput({ type: 'click' }, nav);
+  assert.equal(settings.displayLayoutSetting.value, 'tall');
 });

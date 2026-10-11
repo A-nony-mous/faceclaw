@@ -16,11 +16,11 @@ export type OnboardingNav = {
  */
 export interface OnboardingPage {
   /**
-   * Show the page fullscreen: the whole 640×480 panel, with the app switcher
-   * and status bar hidden. Otherwise it is an ordinary window in the
-   * chosen layout.
+   * Show the page immersive (full-screen): the whole 640×480 panel, with
+   * the app switcher and status bar hidden. Otherwise it is an ordinary
+   * window in the chosen layout.
    */
-  readonly fullscreen?: boolean;
+  readonly immersive?: boolean;
   /** Whether the page belongs in the flow right now; skipped both ways when false. */
   applies?(): boolean;
   /** The page became current, going forward or back. */

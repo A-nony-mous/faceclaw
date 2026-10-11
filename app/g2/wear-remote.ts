@@ -28,8 +28,6 @@ import { type AppDefinition } from "../apps/app-definition";
 import { getInstalledEvenHubApps, installedEvenHubAppId } from "../apps/evenhub/installed-apps";
 import { WEAR_PATHS, wearBridge, type WearMessage } from "../native/wear-bridge";
 import {
-  DISPLAY_MODE_VALUES,
-  displayModeSetting,
   onAnySettingChanged,
   watchCanUnlockSetting,
   watchCrownClockwiseNextSetting,
@@ -88,7 +86,6 @@ const COMMANDS = [
   "connect",
   "disconnect",
   "close-assistant",
-  "display-mode",
 ] as const;
 type WearCommand = (typeof COMMANDS)[number];
 
@@ -277,7 +274,6 @@ export class WearRemote {
         acceptsText: typeof window.receiveTextInput === "function",
       })),
       apps: this.listApps(),
-      displayMode: displayModeSetting.get(),
       remoteEnabled: watchRemoteEnabledSetting.get(),
       crownClockwiseNext: watchCrownClockwiseNextSetting.get(),
       canUnlock: watchCanUnlockSetting.get(),
@@ -522,17 +518,6 @@ export class WearRemote {
         // but tell the watch which of the two happened.
         ack(true, shell.closeAssistant() ? "" : "The assistant was not open.");
         return;
-      case "display-mode": {
-        const value = String(payload.value ?? "");
-        if (!(DISPLAY_MODE_VALUES as readonly string[]).includes(value)) {
-          ack(false, `Unknown display mode: ${value}`);
-          return;
-        }
-        displayModeSetting.set(value as (typeof DISPLAY_MODE_VALUES)[number]);
-        this.schedulePublish();
-        ack(true, `Display mode: ${value}`);
-        return;
-      }
       default:
         ack(false, `Unhandled command: ${command}`);
     }

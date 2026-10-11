@@ -51,7 +51,7 @@ import {
   phoneBatteryVisibilitySetting,
   ringBatteryVisibilitySetting,
   watchBatteryVisibilitySetting,
-  displayModeSetting,
+  displayLayoutSetting,
   elevenLabsApiKeySetting,
   mapboxApiKeySetting,
   mirrorTouchSetting,
@@ -72,7 +72,6 @@ import {
   timeFormatSetting,
   toggleSettingMenuItem,
   useMicControlSetting,
-  verticalPositionSetting,
   voiceProviderSetting,
   screenTimeoutSetting,
   wakeWordActionSetting,
@@ -106,11 +105,9 @@ function settingsSections(): SettingsSection[] {
           },
         }),
         toggleSettingMenuItem(lockScreenEnabledSetting),
-        // Where min-height windows (and the sidebar) sit vertically on the
-        // screen; the dashboard controller repositions surfaces on change.
-        enumSettingMenuItem(verticalPositionSetting),
-        // Band / tall / full-panel; the dashboard controller reflows windows.
-        enumSettingMenuItem(displayModeSetting),
+        // A band (at one of five heights) / Tall / Full Screen; the
+        // dashboard controller moves or reflows windows on change.
+        enumSettingMenuItem(displayLayoutSetting),
       ],
     },
     {

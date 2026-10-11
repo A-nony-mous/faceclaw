@@ -29,9 +29,9 @@ class EvenHubAppLayer implements Layer {
 
   paint(ctx: LayerContext): GrayImage {
     const size = ctx.stack.getBaseSize();
-    // EvenHub apps lay out for the stock 576-wide surface. In the full-panel
-    // display mode the window is 640 wide; paint at stock width and centre
-    // it rather than leaving all the slack on the right.
+    // EvenHub apps lay out for the stock 576-wide surface. In the Full
+    // Screen display mode the window is 640 wide; paint at stock width and
+    // centre it rather than leaving all the slack on the right.
     if (size.width > EVENHUB_SCREEN_WIDTH) {
       const content = this.session.paint({ width: EVENHUB_SCREEN_WIDTH, height: size.height }, ctx.stack.isFocused());
       const image = new GrayImage(size.width, size.height, 0);

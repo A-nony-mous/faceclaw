@@ -330,49 +330,6 @@ export const timeFormatSetting = new ConfigSettingEnum<TimeFormat>({
 });
 
 /**
- * How much of the 640x480 panel the UI uses. "576x288" is the stock band
- * (sidebar + a 288px-tall window at the vertical position); "576x480" keeps
- * the sidebar and gives every window the full height; "640x480" is the whole
- * panel, with the sidebar an overlay that shows only while it has focus. The
- * values name the sizes beside a side strip; with the app switcher along the
- * bottom, the tall height loses the switcher row (displayModeLabel shows the
- * actual size).
- */
-export const DISPLAY_MODE_VALUES = ["576x288", "576x480", "640x480"] as const;
-export type DisplayModeSetting = (typeof DISPLAY_MODE_VALUES)[number];
-
-const DISPLAY_MODE_NAMES: Record<DisplayModeSetting, string> = {
-  "576x288": "Band",
-  "576x480": "Tall",
-  "640x480": "Full panel",
-};
-
-/** Window size per mode with the app switcher along the bottom (see geometry.ts). */
-const BOTTOM_SWITCHER_SIZES: Record<DisplayModeSetting, string> = {
-  "576x288": "576×288",
-  "576x480": "576×444",
-  "640x480": "640×480",
-};
-
-export function displayModeLabel(value: DisplayModeSetting): string {
-  const name = DISPLAY_MODE_NAMES[value];
-  if (!name) return value;
-  const size = appSwitcherPositionSetting.get() === "bottom" ? BOTTOM_SWITCHER_SIZES[value] : value.replace("x", "×");
-  return `${name} · ${size}`;
-}
-
-export const displayModeSetting = new ConfigSettingEnum<DisplayModeSetting>({
-  id: "display-mode",
-  label: "Display mode",
-  storageKey: "display.mode",
-  defaultValue: "576x288",
-  values: DISPLAY_MODE_VALUES,
-  formatValue: displayModeLabel,
-  description:
-    "Band: the stock 288px-tall window beside the app switcher. Tall: the app switcher plus full-height windows. Full panel: the whole 640×480 display; the app switcher overlays the app only while you are in it. Open apps reopen in the new size.",
-});
-
-/**
  * Where the app switcher (the open-window icons) sits: a strip along the
  * left or right edge of the display, a row under the window, or a popup box
  * over the middle of the window that shows only while it has focus.
@@ -397,6 +354,83 @@ export const appSwitcherPositionSetting = new ConfigSettingEnum<AppSwitcherPosit
     "Where the open-app icons go. Left and right take a column beside windows; bottom puts a row beneath the window, which makes full-height windows a little shorter; popup shows them only while you're in the app switcher, in a box over the dimmed window. Bottom and popup leave room at the sides to set the display's depth. Open apps reopen at their new size when a change resizes windows.",
 });
 
+/**
+ * An enum setting that took over from older settings: until it is first
+ * set, its value is derived from theirs.
+ */
+class ConfigSettingEnumWithLegacy<TValue extends string> extends ConfigSettingEnum<TValue> {
+  constructor(options: ConfigSettingEnumOptions<TValue, string>, private readonly legacyValue: () => TValue) {
+    super(options);
+  }
+
+  get(): TValue {
+    return getStringSetting(this.storageKey, "") === "" ? this.legacyValue() : super.get();
+  }
+}
+
+/**
+ * How much of the 640x480 panel windows use, and where: the stock
+ * 288px-tall band, at one of five heights in the field of view; Tall, every
+ * window the full height; or Full Screen, Tall at the panel's whole 640px
+ * width. The app switcher keeps its own room in every mode. Full Screen
+ * needs a bottom row or popup app switcher (a side strip leaves no width to
+ * spare; there it is Tall), has no window frame, and plays at depth 0,
+ * since its windows reach the panel's edges (geometry.ts).
+ */
+export const DISPLAY_LAYOUT_VALUES = [
+  "band-top", "band-high", "band-middle", "band-low", "band-bottom", "tall", "fullscreen",
+] as const;
+export type DisplayLayout = (typeof DISPLAY_LAYOUT_VALUES)[number];
+
+const DISPLAY_LAYOUT_LABELS: Record<DisplayLayout, string> = {
+  "band-top": "Band · Top",
+  "band-high": "Band · High",
+  "band-middle": "Band · Middle",
+  "band-low": "Band · Low",
+  "band-bottom": "Band · Bottom",
+  tall: "Tall",
+  fullscreen: "Full Screen",
+};
+
+export function displayLayoutLabel(value: DisplayLayout): string {
+  return DISPLAY_LAYOUT_LABELS[value] ?? value;
+}
+
+/** Whether the Full Screen display mode is available: with a bottom row or popup app switcher. */
+export function fullScreenAvailable(): boolean {
+  const position = appSwitcherPositionSetting.get();
+  return position === "bottom" || position === "popup";
+}
+
+// Until 2026-10-10 the display mode ("576x288" band, "576x480" tall,
+// "640x480" full panel) and the band's vertical position were separate
+// settings, globally and per app.
+const LEGACY_MODE_LAYOUTS: Record<string, DisplayLayout> = { "576x480": "tall", "640x480": "fullscreen" };
+const LEGACY_POSITION_LAYOUTS: Record<string, DisplayLayout> = {
+  top: "band-top", upper: "band-high", middle: "band-middle", lower: "band-low", bottom: "band-bottom",
+};
+
+function legacyBand(position: string): DisplayLayout {
+  return LEGACY_POSITION_LAYOUTS[position] ?? "band-middle";
+}
+
+function legacyDisplayLayout(): DisplayLayout {
+  const mode = getStringSetting("display.mode", "576x288");
+  return LEGACY_MODE_LAYOUTS[mode] ?? legacyBand(getStringSetting("display.verticalPosition", "middle"));
+}
+
+export const displayLayoutSetting = new ConfigSettingEnumWithLegacy<DisplayLayout>({
+  id: "display-mode",
+  label: "Display mode",
+  storageKey: "display.layout",
+  defaultValue: "band-middle",
+  values: DISPLAY_LAYOUT_VALUES,
+  formatValue: displayLayoutLabel,
+  isDisabled: (value) => value === "fullscreen" && !fullScreenAvailable(),
+  description:
+    "Band: the stock 288px-tall window, at the height in your field of view you choose. Tall: full-height windows. Full Screen: full-height windows across the display's whole width; it needs the app switcher at the bottom or as a popup, and turns depth off, since windows reach the display's edges. Navigate and Terminal can override this. Open apps reopen in the new size.",
+}, legacyDisplayLayout);
+
 const UI_DEPTH_VALUES = ["-62", "-48", "-32", "-16", "0", "16", "32", "48", "62"] as const;
 export type UiDepth = (typeof UI_DEPTH_VALUES)[number];
 
@@ -406,8 +440,9 @@ export type UiDepth = (typeof UI_DEPTH_VALUES)[number];
  * directions. Only applies with the app switcher at the bottom or a popup,
  * where the windows' 576px width leaves 32px at each side: one for the side
  * of the window's frame and 31 to shift into, hence ±62 (see geometry.ts
- * uiDepth and windowFramed); values stay even so the per-lens halves of
- * nested depths add exactly.
+ * uiDepth and windowFramed); not to Full Screen windows, which have no such
+ * margins. Values stay even so the per-lens halves of nested depths add
+ * exactly.
  */
 export const uiDepthSetting = new ConfigSettingEnum<UiDepth>({
   id: "ui-depth",
@@ -420,7 +455,7 @@ export const uiDepthSetting = new ConfigSettingEnum<UiDepth>({
     return depth === 0 ? "0" : depth > 0 ? `+${depth} (nearer)` : `${depth} (farther)`;
   },
   description:
-    "Moves the whole display nearer (positive) or farther away (negative) by shifting it in opposite directions on the two lenses. Available with the app switcher at the bottom or as a popup. Full-panel windows lose a sliver at the edges.",
+    "Moves the whole display nearer (positive) or farther away (negative) by shifting it in opposite directions on the two lenses. Available with the app switcher at the bottom or as a popup; not applied in the Full Screen display mode, whose windows reach the display's edges.",
 });
 
 /**
@@ -443,7 +478,7 @@ export const statusBarPositionSetting = new ConfigSettingEnum<StatusBarPosition>
   formatValue: (value) => value === "top" ? "Top"
     : appSwitcherPositionSetting.get() === "bottom" ? "With app switcher" : "Bottom",
   description:
-    "Where the clock, notification icons, app widgets and battery indicators go. With the app switcher at the bottom, With app switcher puts them at the right end of its row, and windows grow into the top bar's space; with a popup app switcher, Bottom puts them under the window. Available with the app switcher at the bottom or as a popup; with a bottom app switcher, the full-panel display mode keeps the top bar. Changing it reopens open apps in the new size.",
+    "Where the clock, notification icons, app widgets and battery indicators go. With the app switcher at the bottom, With app switcher puts them at the right end of its row, and windows grow into the top bar's space; with a popup app switcher, Bottom puts them under the window. Available with the app switcher at the bottom or as a popup. Changing it reopens open apps in the new size.",
 });
 
 /**
@@ -629,60 +664,41 @@ export const watchMirrorAssistantSetting = new ConfigSettingBoolean({
   description: "Stream assistant replies and on-glasses alerts to the watch so they can be read from the wrist.",
 });
 
-export type VerticalPosition = "top" | "upper" | "middle" | "lower" | "bottom";
+/**
+ * A per-app display mode (Navigate, Terminal): the global one ("global"),
+ * Terminal's own default ("default": tall sessions, the sessions list at
+ * the global mode), or a mode of its own.
+ */
+export type AppDisplayLayout = "default" | "global" | DisplayLayout;
 
-const VERTICAL_POSITION_LABELS: Record<VerticalPosition, string> = {
-  top: "Top",
-  upper: "Upper",
-  middle: "Middle",
-  lower: "Lower",
-  bottom: "Bottom",
-};
+function legacyAppDisplayLayout(appId: string, defaultValue: AppDisplayLayout): AppDisplayLayout {
+  const mode = getStringSetting(`${appId}.displayMode`, defaultValue);
+  const position = getStringSetting(`${appId}.verticalPosition`, "global");
+  if (LEGACY_MODE_LAYOUTS[mode]) return LEGACY_MODE_LAYOUTS[mode];
+  const global = displayLayoutSetting.get();
+  if (mode === "576x288") return position === "global" ? (global.startsWith("band-") ? global : legacyDisplayLayout()) : legacyBand(position);
+  // Following the global mode at a band position of its own.
+  if (mode === "global" && position !== "global" && global.startsWith("band-")) return legacyBand(position);
+  return mode === "default" || mode === "global" ? mode : defaultValue;
+}
 
-export const verticalPositionSetting = new ConfigSettingEnum<VerticalPosition>({
-  id: "vertical-position",
-  label: "Vertical position",
-  storageKey: "display.verticalPosition",
-  defaultValue: "middle",
-  values: ["top", "upper", "middle", "lower", "bottom"],
-  formatValue: (value) => VERTICAL_POSITION_LABELS[value] ?? value,
-  description:
-    "Where standard (reduced-height) windows sit vertically within the display area, to position them within your field of view. Full-height windows use the whole screen. Navigate and Terminal can override these display settings.",
-});
-
-/** Per-app layouts can inherit the display preferences or choose their own size. */
-export type AppDisplayMode = "default" | "global" | DisplayModeSetting;
-
-function appDisplayModeSetting(appId: string, defaultValue: AppDisplayMode): ConfigSettingEnum<AppDisplayMode> {
-  return new ConfigSettingEnum<AppDisplayMode>({
+function appDisplayLayoutSetting(appId: string, defaultValue: AppDisplayLayout): ConfigSettingEnum<AppDisplayLayout> {
+  return new ConfigSettingEnumWithLegacy<AppDisplayLayout>({
     id: `${appId}-display-mode`,
     label: "Display mode",
-    storageKey: `${appId}.displayMode`,
+    storageKey: `${appId}.displayLayout`,
     defaultValue,
-    values: appId === "terminal" ? ["default", "global", ...DISPLAY_MODE_VALUES] : ["global", ...DISPLAY_MODE_VALUES],
-    formatValue: (value) => value === "default" ? "Tall sessions (default)" : value === "global" ? "Use global" : displayModeLabel(value),
+    values: appId === "terminal" ? ["default", "global", ...DISPLAY_LAYOUT_VALUES] : ["global", ...DISPLAY_LAYOUT_VALUES],
+    formatValue: (value) => value === "default" ? "Tall sessions (default)" : value === "global" ? "Use global" : displayLayoutLabel(value),
+    isDisabled: (value) => value === "fullscreen" && !fullScreenAvailable(),
     description: appId === "terminal"
-      ? "Screen size for Terminal. The default keeps session windows tall and the terminals list at the global size. Use global follows Display settings for all Terminal windows. Resizing an open session reconnects its view at the new size."
-      : "Screen size for Navigate. Choose Band to leave more of your field of view clear, or Use global to follow Display settings. Applies to the current route too.",
-  });
+      ? "Display mode for Terminal. The default keeps session windows tall and the terminals list in the global mode. Use global follows Display settings for all Terminal windows. Resizing an open session reconnects its view at the new size."
+      : "Display mode for Navigate. Choose a Band to leave more of your field of view clear, or Use global to follow Display settings. Applies to the current route too.",
+  }, () => legacyAppDisplayLayout(appId, defaultValue));
 }
 
-function appVerticalPositionSetting(appId: string): ConfigSettingEnum<"global" | VerticalPosition> {
-  return new ConfigSettingEnum<"global" | VerticalPosition>({
-    id: `${appId}-vertical-position`,
-    label: "Vertical position",
-    storageKey: `${appId}.verticalPosition`,
-    defaultValue: "global",
-    values: ["global", "top", "upper", "middle", "lower", "bottom"],
-    formatValue: (value) => value === "global" ? "Use global" : VERTICAL_POSITION_LABELS[value],
-    description: "Where reduced-height windows for this app sit in your field of view. Use global follows Display settings. Full-height windows fill the display vertically.",
-  });
-}
-
-export const navigateDisplayModeSetting = appDisplayModeSetting("navigate", "global");
-export const navigateVerticalPositionSetting = appVerticalPositionSetting("navigate");
-export const terminalDisplayModeSetting = appDisplayModeSetting("terminal", "default");
-export const terminalVerticalPositionSetting = appVerticalPositionSetting("terminal");
+export const navigateDisplayLayoutSetting = appDisplayLayoutSetting("navigate", "global");
+export const terminalDisplayLayoutSetting = appDisplayLayoutSetting("terminal", "default");
 
 export type { DataCollectionLevel };
 

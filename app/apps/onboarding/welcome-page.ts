@@ -16,7 +16,7 @@ type TextLine = { font: UiFont; text: string; value: number; spaceBefore: number
 
 /** The splash: logo beside the name, version and how to go on, centred as one group. */
 export class WelcomePage implements OnboardingPage {
-  readonly fullscreen = true;
+  readonly immersive = true;
 
   paint(image: GrayImage): void {
     const { width, height } = image;
