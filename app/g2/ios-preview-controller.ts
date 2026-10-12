@@ -7,7 +7,7 @@ import { launcherEntries } from '../apps/launcher'
 import { getInstalledEvenHubAppById, installedEvenHubPackageId, uninstallEvenHubPackage } from '../apps/evenhub/installed-apps'
 import { isInstalledPackagePresent } from '../apps/evenhub/updates'
 import { openEvenHubStoreForPackage } from '../apps/evenhub'
-import { launchInstalledPackage, closeRunningPackage } from '../apps/evenhub/manager'
+import { launchInstalledPackage, closeRunningPackage, onPhoneShownChanged, phoneUiButton, showOnPhone, type PhoneUiButton } from '../apps/evenhub/manager'
 import { registerSystemTools } from '../assistant/system-tools'
 import { registerWindowTools } from '../assistant/window-tools'
 import { registerNavigateTools } from '../assistant/navigate-tools'
@@ -128,6 +128,8 @@ export class IosPreviewController {
   private nextWorkerFrame = 0
   private inputQueue: Promise<void> = Promise.resolve()
   private lastLayout = ''
+  /** The phone-UI button last pushed to the page (onEvenHubPhoneUiChanged). */
+  private evenHubPhoneUi: PhoneUiButton | null = null
   private readonly appHosts = new Map<string, WorkerAppHost>()
   private readonly inProcessApps = new Map<string, InProcessWindow>()
   private readonly batteryObservers: any[] = []
@@ -162,7 +164,8 @@ export class IosPreviewController {
   constructor(private readonly onFrame: (image: ImageSource, focus: string) => void,
     private readonly onError: (message: string) => void,
     private readonly onConnectionState: (state: SessionState) => void = () => {},
-    private readonly onKeyboardInputChanged: (session: KeyboardInputSession | null) => void = () => {}) {
+    private readonly onKeyboardInputChanged: (session: KeyboardInputSession | null) => void = () => {},
+    private readonly onEvenHubPhoneUiChanged: (button: PhoneUiButton | null) => void = () => {}) {
     this.ensurePreviewDisplay()
     shell.configure({
       actions: this.actions,
@@ -177,7 +180,7 @@ export class IosPreviewController {
       prepareVoiceCapture: () => this.prepareVoiceCapture(),
       getScreenTimeoutMs: () => null,
       requestShellRender: () => this.requestShellRender(),
-      onWindowsChanged: () => this.requestShellRender(),
+      onWindowsChanged: () => { this.requestShellRender(); this.syncEvenHubPhoneUi() },
       onScreenStateChanged: on => {
         if (on) this.glance.dismiss()
         void this.display?.setScreenBlanked(!on).catch(error => this.fail(error))
@@ -220,6 +223,8 @@ export class IosPreviewController {
       assistantAvailable: () => shell.isAssistantAvailable(),
       assistant: text => shell.sendToAssistant(text),
     })
+    // The header's EvenHub phone-UI button hides while that UI is showing.
+    onPhoneShownChanged(() => this.syncEvenHubPhoneUi())
     registerSystemTools()
     registerWindowTools({ apps: ALL_APPS.filter(app => !iosAppUnavailableReason(app.appId)),
       launchApp: id => this.launchApp(id), requestShellRender: () => this.requestShellRender() })
@@ -279,6 +284,7 @@ export class IosPreviewController {
     this.relayout()
     shell.foregroundWindow()?.requestRender()
     this.requestShellRender()
+    this.syncEvenHubPhoneUi()
   }
   pause(): void {
     if (!this.active) return
@@ -288,6 +294,22 @@ export class IosPreviewController {
     this.syncRuntime()
     this.logBluetooth(`Phone background; glasses ${this.state.phase}`)
     this.flushBluetoothLog()
+  }
+  /** Overlay an EvenHub app's phone UI (the header's app-icon button). */
+  showEvenHubPhoneUi(windowId: string): void {
+    showOnPhone(windowId)
+  }
+  /**
+   * Tell the page when the foreground window's EvenHub phone-UI button
+   * changes. A paused controller skips this and catches up on resume.
+   */
+  private syncEvenHubPhoneUi(): void {
+    if (!this.active) return
+    const button = phoneUiButton()
+    const current = this.evenHubPhoneUi
+    if (current?.windowId === button?.windowId && current?.icon === button?.icon) return
+    this.evenHubPhoneUi = button
+    this.onEvenHubPhoneUiChanged(button)
   }
   private get runtimeNeeded(): boolean {
     return this.active || ['connected', 'connecting', 'retrying', 'disconnecting'].includes(this.state.phase)
