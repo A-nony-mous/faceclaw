@@ -451,3 +451,55 @@ export function appViewportRect(mode: WindowHeightMode, appId?: string): {
     ...appViewportSize(mode, appId),
   };
 }
+
+export type ScreenRect = { x: number; y: number; width: number; height: number };
+
+function unionRect(a: ScreenRect, b: ScreenRect): ScreenRect {
+  const x = Math.min(a.x, b.x);
+  const y = Math.min(a.y, b.y);
+  return {
+    x,
+    y,
+    width: Math.max(a.x + a.width, b.x + b.width) - x,
+    height: Math.max(a.y + a.height, b.y + b.height) - y,
+  };
+}
+
+/**
+ * The part of the screen the shell draws in while the given (foreground)
+ * window is up: the window's band, plus the frame's side pixels; the
+ * min-height band the shell overlays align to; and a side strip or bottom
+ * row (a popup shows within the window's content). An immersive window has
+ * the whole panel. The phone mirror's Scaled preview zooms to this.
+ */
+export function usedScreenRect(heightMode: WindowHeightMode, appId?: string): ScreenRect {
+  if (isImmersive(appId)) return { x: 0, y: 0, width: G2_LENS_WIDTH, height: G2_LENS_HEIGHT };
+  const frame = windowFramed(appId) ? 1 : 0;
+  const x = appViewportLeft(appId) - frame;
+  const width = appViewportWidth(appId) + 2 * frame;
+  let used = unionRect(
+    { x, y: windowTop(heightMode, appId), width, height: windowBandHeight(heightMode, appId) },
+    { x, y: minWindowTop(appId), width, height: MIN_WINDOW_HEIGHT },
+  );
+  if (switcherPosition() !== "popup") used = unionRect(used, switcherRect(heightMode, appId));
+  return used;
+}
+
+/**
+ * The screen area the phone mirror shows to present `used` as large as it
+ * fits, centred, at the panel's own 4:3 aspect (so the mirror keeps its
+ * shape whatever the display mode): `used` grown along one axis, past the
+ * panel's edges if need be (the mirror shows black there).
+ */
+export function phonePreviewRect(used: ScreenRect): ScreenRect {
+  // Whole 4:3 units, so the aspect is exact.
+  const units = Math.ceil(Math.max(used.width / 4, used.height / 3));
+  const width = units * 4;
+  const height = units * 3;
+  return {
+    x: Math.round(used.x + (used.width - width) / 2),
+    y: Math.round(used.y + (used.height - height) / 2),
+    width,
+    height,
+  };
+}

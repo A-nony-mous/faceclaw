@@ -43,7 +43,8 @@ import { makeInputEvent, type InputEvent, type InputEventPayload } from '../ui/g
 import { noopLayerActions, type LayerActions } from '../ui/layers'
 import { TextViewerLayer } from '../apps/files/text-viewer'
 import { shell, rawInputEventToInputEvent, type ShellWindow } from '../ui/shell/shell'
-import { appViewportRect, isOnSwitcherEdge, sidebarStripVisible } from '../ui/shell/geometry'
+import { appViewportRect, isOnSwitcherEdge, sidebarStripVisible, type ScreenRect } from '../ui/shell/geometry'
+import { mirrorToPanelFraction, phonePreviewCrop } from './phone-preview-crop'
 import { onAnySettingChanged,
   previewColorSetting, lockScreenEnabledSetting, getBrightnessPreferences, getStringSettingById,
   nightscoutSiteUrlSetting, nightscoutApiTokenSetting, voiceProviderSetting, elevenLabsApiKeySetting,
@@ -116,6 +117,8 @@ export class IosPreviewController {
     appendLog: message => this.logBluetooth(message),
   })
   private previewTimer: ReturnType<typeof setTimeout> | null = null
+  /** The screen area the mirror's image shows (Preview scaling), or null for the whole panel. */
+  private previewCrop: ScreenRect | null = null
   private clockTimer: ReturnType<typeof setInterval> | null = null
   private offSettings: (() => void) | null = null
   private lastBrightness: string | null = null
@@ -511,8 +514,10 @@ export class IosPreviewController {
       this.previewTimer = null
       if (!this.active) return
       try {
-        const image = this.display?.getCompositePreview(previewColorSetting.get() === 'green')
+        const crop = phonePreviewCrop(this.glassesLocked, this.glance.screenRect())
+        const image = this.display?.getCompositePreview(previewColorSetting.get() === 'green', crop)
         if (!image) return
+        this.previewCrop = crop
         this.onFrame(image, this.glassesLocked ? 'Glasses locked' : this.glance.isVisible() ? 'Glanceboard'
           : `${shell.foregroundWindow()?.title ?? 'Apps'} · ${shell.getFocus() === 'sidebar' ? 'App switcher' : 'App'}`)
       } catch (error) { this.fail(error) }
@@ -566,7 +571,8 @@ export class IosPreviewController {
     await shell.receiveInput(event)
     this.requestShellRender()
   }
-  private async mirrorTap(nx: number, ny: number): Promise<void> {
+  private async mirrorTap(mirrorNx: number, mirrorNy: number): Promise<void> {
+    const { nx, ny } = mirrorToPanelFraction(this.previewCrop, mirrorNx, mirrorNy)
     const x = Math.max(0, Math.min(639, Math.floor(nx * 640)))
     const y = Math.max(0, Math.min(479, Math.floor(ny * 480)))
     const window = shell.foregroundWindow()

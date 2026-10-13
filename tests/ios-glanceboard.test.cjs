@@ -145,6 +145,8 @@ function fixture() {
     '../native/nightscout-bridge': { nightscoutBridge: { async start() {}, async stop() {} } },
     '../native/weather': { weatherBridge: { setSessionActive() {} } },
     './glance-host': { GlanceHost }, './events': events,
+    // Whole-panel mirror: the pixel assertions below index the full 640x480 preview.
+    './phone-preview-crop': { phonePreviewCrop: () => null, mirrorToPanelFraction: (_crop, nx, ny) => ({ nx, ny }) },
     './lock-screen': { LOCK_SCREEN_SURFACE_ID: 'lock-screen', createLockScreenImage: () => new images.GrayImage(640, 480, 123) },
     './glasses-presence': load('app/g2/glasses-presence.ts', {}),
     './device-addresses': { loadDeviceAddresses: () => ({ right: 'AA', left: 'BB', ring: '' }) }, './ios-peripheral-identity': { deviceAddressError: () => null },

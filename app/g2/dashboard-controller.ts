@@ -46,6 +46,7 @@ const MIRROR_TOUCH_GESTURES: Record<Exclude<MirrorTouchKind, "tap">, WearRemoteI
   "swipe-right": "swipe-right",
 };
 import { GlanceHost } from "./glance-host";
+import { mirrorToPanelFraction, phonePreviewCrop } from "./phone-preview-crop";
 import { type GlanceEvent } from "./glance-state";
 import { isPreviewOnlyMode } from "../phone-ui/onboarding-state";
 import { claimGlassesOnboardingAutoLaunch, ONBOARDING_APP_ID } from "../apps/onboarding/onboarding-progress";
@@ -69,7 +70,7 @@ import { ALL_APPS } from "../apps/all-apps";
 import { type AppContext, type AppDefinition, type AppLaunchParams, type TextEditorHost } from "../apps/app-definition";
 import { type InProcessAppOptions, type InProcessWindow } from "../ui/shell/in-process-window";
 import { loadPersistedOpenApps, savePersistedOpenApps } from "../ui/shell/open-apps-persistence";
-import { appViewportRect, isOnSwitcherEdge, sidebarStripVisible, type WindowHeightMode } from "../ui/shell/geometry";
+import { appViewportRect, isOnSwitcherEdge, sidebarStripVisible, type ScreenRect, type WindowHeightMode } from "../ui/shell/geometry";
 import { type LayerActions, type TextSettingsEditToggle } from "../ui/layers";
 import { type KeyboardInputSession } from "../ui/shell/keyboard-input";
 import { appSwitcherPositionSetting, statusBarPositionSetting, statusBarVisibilitySetting, windowBorderSetting, assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, getBrightnessPreferences, displayLayoutSetting, navigateDisplayLayoutSetting, terminalDisplayLayoutSetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, ringConnectionModeSetting, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, suspendEvenHubWhenScreenOffSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
@@ -273,6 +274,8 @@ class DashboardController {
   private extractedFontsConfirmed = false;
   private screenRecordingActive = false;
   private displayPreview: ImageSource | null = createInitialDisplayPreview();
+  /** The screen area displayPreview shows (Preview scaling), or null for the whole panel. */
+  private displayPreviewCrop: ScreenRect | null = null;
   private silentMode = false;
   // Brightness value last pushed to the glasses; see pushBrightness.
   private lastPushedBrightness: string | null = null;
@@ -459,8 +462,9 @@ class DashboardController {
       this.applyAppLayoutsIfChanged();
       this.syncAssistantBridgeIfChanged();
       this.syncLockScreenSettingIfChanged();
-      // A Preview color change should show on the mirror at once, not at the
-      // next composited frame (cheap: floor-limited, dedup'd on the Java side).
+      // A Preview color or scaling change should show on the mirror at once,
+      // not at the next composited frame (cheap: floor-limited, dedup'd on
+      // the Java side).
       this.schedulePreviewUpdate();
     });
     // Connect to the external agent bridge at boot if configured; the
@@ -1955,8 +1959,9 @@ class DashboardController {
       await this.injectSyntheticRingInput(MIRROR_TOUCH_GESTURES[kind], "watch");
       return;
     }
-    const x = Math.round(Math.min(1, Math.max(0, nx)) * G2_LENS_WIDTH);
-    const y = Math.round(Math.min(1, Math.max(0, ny)) * G2_LENS_HEIGHT);
+    const at = mirrorToPanelFraction(this.displayPreviewCrop, nx, ny);
+    const x = Math.round(Math.min(1, Math.max(0, at.nx)) * G2_LENS_WIDTH);
+    const y = Math.round(Math.min(1, Math.max(0, at.ny)) * G2_LENS_HEIGHT);
     const foreground = shell.foregroundWindow();
     const stripShown = sidebarStripVisible(shell.getFocus(), foreground?.appId);
     this.appendLog(`mirror tap at ${x},${y}`);
@@ -2909,8 +2914,10 @@ class DashboardController {
       const power = activity.getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager;
       if (!power?.isInteractive()) return;
     }
-    const preview = display.getCompositePreview(previewColorSetting.get() === "green");
+    const crop = phonePreviewCrop(this.glassesLocked, this.glance.screenRect());
+    const preview = display.getCompositePreview(previewColorSetting.get() === "green", crop);
     if (preview) {
+      this.displayPreviewCrop = crop;
       this.setDisplayPreview(preview);
     }
   }

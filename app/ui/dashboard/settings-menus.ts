@@ -57,6 +57,7 @@ import {
   mirrorTouchSetting,
   openAiApiKeySetting,
   previewColorSetting,
+  previewScalingSetting,
   phoneRotationSetting,
   ringConnectionModeSetting,
   sonioxApiKeySetting,
@@ -162,6 +163,7 @@ function settingsSections(): SettingsSection[] {
       items: [
         enumSettingMenuItem(phoneRotationSetting),
         enumSettingMenuItem(previewColorSetting),
+        enumSettingMenuItem(previewScalingSetting),
         toggleSettingMenuItem(mirrorTouchSetting),
       ],
     },

@@ -3,11 +3,25 @@ import { GrayImage } from '../graphics/image'
 
 declare const FaceclawGraphics: any
 
-export function previewPixels(pixels: Uint8Array, width: number, height: number, green = false): ImageSource {
+type CropRect = { x: number; y: number; width: number; height: number }
+
+/** The gray pixels of a screen area; black where it runs past the frame's edges. */
+function cropGray(pixels: Uint8Array, width: number, height: number, crop: CropRect): Uint8Array {
+  const cropped = new Uint8Array(crop.width * crop.height)
+  const left = Math.max(crop.x, 0), right = Math.min(crop.x + crop.width, width)
+  if (right <= left) return cropped
+  for (let y = Math.max(crop.y, 0); y < Math.min(crop.y + crop.height, height); y++) {
+    cropped.set(pixels.subarray(y * width + left, y * width + right), (y - crop.y) * crop.width + (left - crop.x))
+  }
+  return cropped
+}
+
+/** Gray pixels as the phone mirror's image, optionally cropped to a screen area (Preview scaling). */
+export function previewPixels(pixels: Uint8Array, width: number, height: number, green = false, crop: CropRect | null = null): ImageSource {
   // NSData copies the buffer; the UIImage owns its pixels after this call.
-  const copy = new Uint8Array(pixels)
+  const copy = crop ? cropGray(pixels, width, height, crop) : new Uint8Array(pixels)
   const data = NSData.dataWithBytesLength(interop.handleof(copy.buffer), copy.byteLength)
-  const native = FaceclawGraphics.previewWidthHeightGreen(data, width, height, green)
+  const native = FaceclawGraphics.previewWidthHeightGreen(data, crop?.width ?? width, crop?.height ?? height, green)
   if (!native) throw new Error('Could not create preview image')
   return new ImageSource(native)
 }

@@ -263,6 +263,90 @@ test('an immersive app fills the panel without chrome rows, frame or depth, in a
   }
 });
 
+test('the phone mirror zooms to the area the shell uses, centred at the panel\'s 4:3', () => {
+  const g = geometry();
+  const preview = (mode, appId) => {
+    const used = { ...g.usedScreenRect(mode, appId) };
+    return { used, shown: { ...g.phonePreviewRect(used) } };
+  };
+  const panel = { x: 0, y: 0, width: 640, height: 480 };
+  // A side strip and band: the panel's width, so only centring vertically.
+  assert.deepEqual(preview('min'), { used: { x: 0, y: 96, width: 640, height: 288 }, shown: panel });
+  g.settings.displayLayoutSetting.value = 'band-top';
+  assert.deepEqual(preview('min').shown, { x: 0, y: -96, width: 640, height: 480 });
+  g.settings.appSwitcherPositionSetting.value = 'right';
+  g.settings.displayLayoutSetting.value = 'band-high';
+  assert.deepEqual(preview('min'), { used: { x: 0, y: 48, width: 640, height: 288 }, shown: { x: 0, y: -48, width: 640, height: 480 } });
+  // A bottom row: the band with the frame's sides, and the row under it.
+  g.settings.appSwitcherPositionSetting.value = 'bottom';
+  g.settings.displayLayoutSetting.value = 'band-middle';
+  assert.deepEqual(preview('min'), { used: { x: 31, y: 78, width: 578, height: 324 }, shown: { x: 30, y: 23, width: 580, height: 435 } });
+  // A tall window (the terminal's default) leaves just the frame's margins.
+  assert.deepEqual(preview('max', 'terminal'), { used: { x: 31, y: 0, width: 578, height: 480 }, shown: panel });
+  // A popup shows within the window: just the band.
+  g.settings.appSwitcherPositionSetting.value = 'popup';
+  assert.deepEqual(preview('min'), { used: { x: 31, y: 96, width: 578, height: 288 }, shown: { x: 30, y: 23, width: 580, height: 435 } });
+  // Full Screen and immersive windows use the whole panel.
+  g.settings.displayLayoutSetting.value = 'fullscreen';
+  assert.deepEqual(preview('min'), { used: panel, shown: panel });
+  g.settings.displayLayoutSetting.value = 'band-middle';
+  g.setAppImmersive('onboarding', true);
+  assert.deepEqual(preview('min', 'onboarding'), { used: panel, shown: panel });
+  // Every layout's shown area is exactly 4:3 and contains the used area.
+  for (const position of ['left', 'right', 'bottom', 'popup']) {
+    g.settings.appSwitcherPositionSetting.value = position;
+    for (const layout of LAYOUTS) {
+      g.settings.displayLayoutSetting.value = layout;
+      for (const mode of ['min', 'medium', 'max']) {
+        const { used, shown } = preview(mode);
+        assert.equal(shown.width * 3, shown.height * 4);
+        assert.ok(shown.width <= 640 && shown.height <= 480);
+        assert.ok(shown.x <= used.x && shown.y <= used.y);
+        assert.ok(shown.x + shown.width >= used.x + used.width && shown.y + shown.height >= used.y + used.height);
+      }
+    }
+  }
+});
+
+test('the mirror\'s crop follows Preview scaling, the Glanceboard and the lock, and maps taps back to the panel', () => {
+  const g = geometry();
+  const scaling = { value: 'scaled', get() { return this.value; } };
+  let foreground = { heightMode: 'min', appId: 'launcher' };
+  const modules = {
+    '../graphics/image': { G2_LENS_WIDTH: 640, G2_LENS_HEIGHT: 480 },
+    '../ui/dashboard-settings': { previewScalingSetting: scaling },
+    '../ui/shell/geometry': g,
+    '../ui/shell/shell': { shell: { foregroundWindow: () => foreground } },
+  };
+  const context = { exports: {}, require: (name) => modules[name] };
+  vm.runInNewContext(js(read('app/g2/phone-preview-crop.ts')), context);
+  const { phonePreviewCrop, mirrorToPanelFraction } = context.exports;
+  const crop = (locked = false, glance = null) => {
+    const rect = phonePreviewCrop(locked, glance);
+    return rect && { ...rect };
+  };
+  g.settings.appSwitcherPositionSetting.value = 'bottom';
+  const band = { x: 30, y: 23, width: 580, height: 435 };
+  assert.deepEqual(crop(), band);
+  // The whole panel is no crop at all.
+  foreground = { heightMode: 'max', appId: 'terminal' };
+  assert.equal(crop(), null);
+  foreground = null;
+  assert.deepEqual(crop(), band);
+  // The Glanceboard while it shows; a locked display's centred box needs the panel.
+  assert.deepEqual(crop(false, { x: 32, y: 48, width: 576, height: 432 }), { x: 32, y: 48, width: 576, height: 432 });
+  assert.deepEqual(crop(false, { x: 32, y: 96, width: 576, height: 288 }), { x: 32, y: 24, width: 576, height: 432 });
+  assert.equal(crop(true), null);
+  scaling.value = 'raw';
+  assert.equal(crop(), null);
+  // Taps: the mirror's corners are the crop's, its margins past the panel's edges.
+  assert.deepEqual({ ...mirrorToPanelFraction(null, 0.25, 0.75) }, { nx: 0.25, ny: 0.75 });
+  assert.deepEqual({ ...mirrorToPanelFraction(band, 0, 0) }, { nx: 30 / 640, ny: 23 / 480 });
+  assert.deepEqual({ ...mirrorToPanelFraction(band, 1, 1) }, { nx: 610 / 640, ny: 458 / 480 });
+  const above = mirrorToPanelFraction({ x: 0, y: -96, width: 640, height: 480 }, 0.5, 0.1);
+  assert.ok(above.ny < 0);
+});
+
 // The real chrome layer over the given geometry, with platform pieces stubbed:
 // a 4px-per-character font that paints each character as a 2x6 block, up to
 // `notifications` 24px notification icons (keyed n0, n1, ...), and a phone
