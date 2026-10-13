@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.8.4 - Future
+
+### Features
+
+* Bottom-bar app switcher switches two a multi-row layout when it runs out of space
+* T3 Code client: Add options (worktree, host, etc) when creating threads
+
+### Bug fixes
+
+* Phone preview is centered on the phone screen when apps are not maximized
+* iOS: Add missing EvenHub icons on the phone home screen
+
 ## 0.8.3 - 2026-10-10
 
 * Fix several issues that would cause disconnection and disconnect-looping
