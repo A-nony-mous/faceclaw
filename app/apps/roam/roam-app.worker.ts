@@ -251,9 +251,17 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
         );
       break;
     }
+    case "resize-window":
+      if (!window || window.windowId !== message.windowId) break;
+      window.viewportWidth = message.viewport.width;
+      window.viewportHeight = message.viewport.height;
+      window.view.resize(message.viewport.width - DOC_MARGIN * 2, message.viewport.height - HEADER_HEIGHT - BOTTOM_MARGIN);
+      window.menu?.resize(message.viewport);
+      window.lastSubmittedFingerprint = "";
+      render();
+      break;
     case "input-focus":
     case "navigation-sensors":
-    case "resize-window":
       break;
   }
 };

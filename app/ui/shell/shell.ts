@@ -143,9 +143,10 @@ export type ShellWindow = {
   /** Repaint and resubmit this window's surface. */
   requestRender: () => void;
   /**
-   * Re-measure against the current display mode (viewport size / band) and
-   * repaint. Windows without it (workers with a canvas fixed at open) are
-   * closed and relaunched by the controller instead.
+   * Re-measure against the current display mode and app switcher (viewport
+   * size / band) and repaint. Windows without it are closed and relaunched
+   * by the controller instead on a display mode change, and left at the size
+   * they opened with when the bottom switcher changes height.
    */
   relayout?: () => void;
   /**
@@ -201,6 +202,12 @@ export type ShellConfig = {
   onScreenStateChanged: (on: boolean) => void;
   /** Window registered/removed or foreground changed (persists the open-app list). */
   onWindowsChanged?: () => void;
+  /**
+   * The bottom switcher's layout changed its height (geometry.ts
+   * setSwitcherBarHeight): windows have to move, or resize, to suit. Called
+   * after the shell paint that found it.
+   */
+  onSwitcherBarHeightChanged?: () => void;
   /**
    * The Notifications app's window, opened in the background (neither
    * foregrounded nor focused) unless it is open already, for the switcher
@@ -445,8 +452,9 @@ class Shell {
     requestShellRender: () => {},
     onScreenStateChanged: () => {},
   };
-  private readonly chrome = new ShellChromeLayer(() => this.chromeState());
+  private readonly chrome = new ShellChromeLayer(() => this.chromeState(), () => this.switcherBarHeightChanged());
   private readonly stack = new LayerStack(this.chrome, this.actions);
+  private switcherBarChangePending = false;
 
   // Top-bar settings we mirror into the chrome; a change to any of them
   // repaints the shell surface so the top bar reflects it immediately.
@@ -492,6 +500,21 @@ class Shell {
       this.lastChromeSettingsKey = key;
       this.config.requestShellRender();
     });
+  }
+
+  /**
+   * The chrome found, mid-paint, that the bottom switcher's height changed.
+   * The controller moves or resizes windows once the paint is over: a
+   * window's relayout repaints it, which mustn't happen inside the shell's
+   * own paint.
+   */
+  private switcherBarHeightChanged(): void {
+    if (this.switcherBarChangePending) return;
+    this.switcherBarChangePending = true;
+    setTimeout(() => {
+      this.switcherBarChangePending = false;
+      this.config.onSwitcherBarHeightChanged?.();
+    }, 0);
   }
 
   /** Add a window (or replace one with the same windowId, keeping its slot). */

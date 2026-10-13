@@ -181,6 +181,11 @@ export class IosPreviewController {
       getScreenTimeoutMs: () => null,
       requestShellRender: () => this.requestShellRender(),
       onWindowsChanged: () => { this.requestShellRender(); this.syncEvenHubPhoneUi() },
+      onSwitcherBarHeightChanged: () => {
+        this.relayout()
+        shell.foregroundWindow()?.requestRender()
+        this.requestShellRender()
+      },
       onScreenStateChanged: on => {
         if (on) this.glance.dismiss()
         void this.display?.setScreenBlanked(!on).catch(error => this.fail(error))

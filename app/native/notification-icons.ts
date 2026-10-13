@@ -58,19 +58,21 @@ export function readActiveNotificationIcons(maxIcons: number, allowStale: boolea
   const now = Date.now();
   if (cachedAtMs > 0 && now - cachedAtMs < ICON_CACHE_MS) {
     logCurrent("notification icons served from cache");
-    return { icons: cachedIcons.map(icon => icon.clone()), keys: cachedKeys.slice(), stale: false };
+    return cachedIconsResult(maxIcons, false);
   }
   if (allowStale) {
     logCurrent("notification icons served stale");
-    return { icons: cachedIcons.map(icon => icon.clone()), keys: cachedKeys.slice(), stale: true };
+    return cachedIconsResult(maxIcons, true);
   }
 
+  // Every icon, whatever this caller wants: the cache serves callers asking
+  // for different counts (the switcher row needs them all to lay itself out).
   const keyList = new java.util.ArrayList();
   const bytes = spanCurrent("fetch-notification-icons", () =>
     toUint8Array(
       com.faceclaw.app.FaceclawMediaNotificationListenerService.getActiveNotificationIconGrays(
         ICON_SIZE,
-        maxIcons,
+        ALL_NOTIFICATIONS,
         keyList,
       ),
     ),
@@ -91,7 +93,12 @@ export function readActiveNotificationIcons(maxIcons: number, allowStale: boolea
   cachedIcons = icons;
   cachedKeys = keys;
   cachedAtMs = now;
-  return { icons: icons.map(icon => icon.clone()), keys: keys.slice(), stale: false };
+  return cachedIconsResult(maxIcons, false);
+}
+
+/** Copies of the first maxIcons cached icons, with their keys. */
+function cachedIconsResult(maxIcons: number, stale: boolean): NotificationIconsResult {
+  return { icons: cachedIcons.slice(0, maxIcons).map(icon => icon.clone()), keys: cachedKeys.slice(0, maxIcons), stale };
 }
 
 export type NotificationIconResult = {

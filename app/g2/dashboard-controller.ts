@@ -423,6 +423,7 @@ class DashboardController {
       },
       openNotificationsWindow: () =>
         this.openInProcessAppInBackground(NOTIFICATIONS_WINDOW_ID, NOTIFICATIONS_SURFACE_ID, createNotificationsAppWindow),
+      onSwitcherBarHeightChanged: () => this.applySwitcherBarHeight(),
       onScreenStateChanged: (on) => {
         // Any wake of the regular UI replaces a showing Glanceboard.
         if (on) this.glance.dismiss();
@@ -581,6 +582,29 @@ class DashboardController {
       this.requestShellRender();
     })().catch((error) => {
       this.appendLog(`display mode change failed: ${this.formatError(error)}`);
+    });
+  }
+
+  /**
+   * The bottom switcher's layout changed its height (shell.ts
+   * onSwitcherBarHeightChanged): window bands move where the slack under
+   * them runs out, and full-height windows resize; the rest stay as they
+   * are. Windows that can't resize keep the surface they have, the switcher
+   * covering any of it that it now overlaps, rather than being relaunched
+   * for it.
+   */
+  private applySwitcherBarHeight(): void {
+    void (async () => {
+      for (const window of Array.from(shell.getWindows())) {
+        const rect = JSON.stringify(appViewportRect(window.heightMode, window.appId));
+        if (!window.relayout || this.windowSurfaceRects.get(window.surfaceId) === rect) continue;
+        window.relayout();
+        await this.configureWindowSurface(window.surfaceId, this.isForegroundWindow(window.windowId), window.heightMode);
+      }
+      shell.foregroundWindow()?.requestRender();
+      this.requestShellRender();
+    })().catch((error) => {
+      this.appendLog(`switcher height change failed: ${this.formatError(error)}`);
     });
   }
 
@@ -2565,13 +2589,14 @@ class DashboardController {
     target: DisplayTarget | null = this.display,
   ): Promise<void> {
     if (!target) return;
-    await target.configureSurface(surfaceId, {
-      ...appViewportRect(heightMode, shell.getWindows().find((window) => window.surfaceId === surfaceId)?.appId),
-      zOrder: 0,
-      transparency: "opaque",
-    });
+    const rect = appViewportRect(heightMode, shell.getWindows().find((window) => window.surfaceId === surfaceId)?.appId);
+    this.windowSurfaceRects.set(surfaceId, JSON.stringify(rect));
+    await target.configureSurface(surfaceId, { ...rect, zOrder: 0, transparency: "opaque" });
     await target.setSurfaceVisible(surfaceId, typeof visible === "function" ? visible() : visible);
   }
+
+  /** Each window surface's rect as last configured (applySwitcherBarHeight skips those that stay). */
+  private readonly windowSurfaceRects = new Map<string, string>();
 
   /** A late answer to "is this window in front?", for configureWindowSurface. */
   private isForegroundWindow(windowId: string): () => boolean {
@@ -2579,6 +2604,7 @@ class DashboardController {
   }
 
   private removeWindowSurface(surfaceId: string): void {
+    this.windowSurfaceRects.delete(surfaceId);
     const display = this.display;
     if (!display) return;
     void display.removeSurface(surfaceId).catch((error) => {

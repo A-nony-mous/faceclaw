@@ -282,7 +282,7 @@ function chromeLayer(g, { notifications = 0, phoneBattery = null, windows = 1, t
     '../../graphics/textwrap': require('../.test-build/app/graphics/textwrap.js'),
     '../../graphics/battery': require('../.test-build/app/graphics/battery.js'),
     './ambient-cards': { activeAmbientCards: () => [] },
-    '../../native/notification-icons': { readActiveNotificationIcons: (max) => {
+    '../../native/notification-icons': { ALL_NOTIFICATIONS: 0x7fffffff, readActiveNotificationIcons: (max) => {
       requested.push(max);
       const count = Math.min(max, notifications);
       return { icons: Array.from({ length: count }, () => new graphics.GrayImage(24, 24, 200)),
@@ -307,7 +307,9 @@ function chromeLayer(g, { notifications = 0, phoneBattery = null, windows = 1, t
     selectedIndex: 0, focus: 'window', foregroundHeightMode: 'min',
     battery: { headset: null, ring: null, watch: null }, trayIcons,
   };
-  return { chrome: new context.exports.ShellChromeLayer(() => state), state, requested };
+  let heightChanges = 0;
+  const chrome = new context.exports.ShellChromeLayer(() => state, () => heightChanges++);
+  return { chrome, state, requested, planBottomBar: context.exports.planBottomBar, heightChanges: () => heightChanges };
 }
 
 test('a bottom app switcher frames the foreground window\'s content in a rounded border', () => {
@@ -405,12 +407,13 @@ test('the launcher\'s tab lines up with the window frame, whose corner squares t
   ({ px, at } = paint(chrome));
   assert.deepEqual([px(31, 365), px(32, 365), at(35, 366), at(36, 366)], [0, 0, 1, 40]);
   assert.equal(chrome.windowIndexAt(31, 380, 3), 0);
-  // Scrolled past the launcher, the cells keep the left chevron's margin.
-  const scrolled = chromeLayer(g, { windows: 20 });
-  scrolled.state.selectedIndex = 19;
+  // Scrolled past the launcher (more windows than two rows of 14 hold), the
+  // cells keep the left chevron's margin.
+  const scrolled = chromeLayer(g, { windows: 40 });
+  scrolled.state.selectedIndex = 39;
   ({ px } = paint(scrolled.chrome));
-  assert.equal(scrolled.chrome.windowIndexAt(35, 380, 20), null);
-  assert.notEqual(scrolled.chrome.windowIndexAt(41, 380, 20), null);
+  assert.equal(scrolled.chrome.windowIndexAt(35, 380, 40), null);
+  assert.notEqual(scrolled.chrome.windowIndexAt(41, 380, 40), null);
   assert.equal(px(31, 365), 0);
 });
 
@@ -459,35 +462,144 @@ test('the switcher row lays out windows, free space, notifications, widgets, bat
   assert.equal(at(row, 40 + 2, 366 + 2), 120, 'first window icon');
   assert.equal(chrome.windowIndexAt(45, 380, 1), 0);
   assert.equal(chrome.windowIndexAt(iconsLeft + 2, 380, 1), null);
-  // Notification icons stop short of the one window slot's room (with the
-  // row's margins and the gap to the status bar).
-  assert.equal(requested.at(-1), Math.floor((trayLeft - 8 - (32 + 20 + 40 - 8 + 8) + 4) / 28));
+  // The row asks for every notification icon, to lay itself out round them all.
+  assert.equal(requested.at(-1), 0x7fffffff);
   // No top bar, but the frame is still there, its top one row above the content.
   const [frame] = row.image.draws.filter((d) => d.presentation?.displayList);
   assert.deepEqual([row.x + frame.x, row.y + frame.y, frame.source.height], [31, 78, 289]);
   shellScene.encodeShellScene(parts, g.uiDepth());
 });
 
-test('many windows scroll in what the notification icons leave them', () => {
+test('past two rows of windows, they scroll, and notification icons give way to a few slots a row', () => {
   const g = geometry();
   g.settings.appSwitcherPositionSetting.value = 'bottom';
   g.settings.statusBarPositionSetting.value = 'bottom';
-  const { chrome, requested } = chromeLayer(g, { notifications: 40, windows: 12 });
+  const { chrome, requested, heightChanges } = chromeLayer(g, { notifications: 40, windows: 12 });
   const [row, status] = chrome.paintParts();
-  // Clock only (no batteries or widgets): notifications end 8px before its
-  // 8px lead-in, and stop where three window slots plus margins remain.
-  const trayLeft = 608 - 56 - 8, floor = 32 + 20 + 3 * 40 - 8 + 8;
-  const max = Math.floor((trayLeft - 8 - floor + 4) / 28);
-  assert.equal(requested.at(-1), max);
-  const iconsLeft = trayLeft - 8 - max * 28 + 4;
-  assert.equal(status.x, iconsLeft - 2);
-  // Three windows fit before the status bar's gap; the rest scroll, with the
-  // chevron at the end of the windows rather than of the row.
+  assert.equal(requested.at(-1), 0x7fffffff);
+  // The last layout: two rows of each, 72px tall, under the unmoved band.
+  assert.equal(g.switcherRowHeight(), 72);
+  assert.equal(heightChanges(), 1);
+  assert.deepEqual([row.y, row.image.height], [366, 72]);
+  // Notification icons drop from the end until the two status rows leave
+  // three window slots a row (32 + 20 + 3 * 40 - 8, and the gap): 28 stay,
+  // 15 in the first row (416px) and 13 with the clock in the second (432px).
+  assert.equal(chrome.notificationKeys().length, 28);
+  assert.deepEqual([status.x, status.y, status.image.height], [608 - 432 - 2, 367, 71]);
+  const at = (p, x, y) => p.image.withDrawsBaked().pixels[(y - p.y) * p.image.width + x - p.x];
+  assert.deepEqual([at(status, 608 - 416, 366 + 5 + 2), at(status, 608 - 432, 366 + 36 + 5 + 2)], [200, 200]);
+  // Three windows a row; the rest scroll, with the chevron after the second
+  // row's, at the end of the windows rather than of the row.
   assert.equal(chrome.windowIndexAt(32 + 10 + 2 * 40 + 4, 380, 12), 2);
   assert.equal(chrome.windowIndexAt(32 + 10 + 3 * 40 + 4, 380, 12), null);
-  const windowsRight = iconsLeft - 8;
-  const chevron = row.image.pixels.findIndex((v, i) => v === 140);
-  assert.equal(chevron % row.image.width + row.x, windowsRight - 6);
+  assert.equal(chrome.windowIndexAt(32 + 10 + 2 * 40 + 4, 420, 12), 5);
+  const windowsRight = 608 - 432 - 8;
+  const chevron = row.image.pixels.findIndex((v) => v === 140);
+  assert.deepEqual([chevron % row.image.width + row.x, Math.floor(chevron / row.image.width) + row.y], [windowsRight - 6, 366 + 36 + 18 - 5]);
+});
+
+test('the bottom switcher falls back to denser layouts as what it holds outgrows it', () => {
+  const { planBottomBar } = chromeLayer(geometry());
+  const notifications = (count) => Array.from({ length: count }, () => ({ kind: 'notification', width: 24 }));
+  const clock = { kind: 'clock', width: 56 };
+  const summary = (plan) => [plan.level, plan.height, plan.windowRows, plan.windowColumns,
+    Array.from(plan.statusRows, (items) => items.length), plan.statusWidth, plan.statusPitch];
+  // Three windows (132px with margins) and five icons and the clock fit one row.
+  assert.deepEqual(summary(planBottomBar(576, 3, [...notifications(5), clock])), [1, 36, 1, 8, [6], 208, 28]);
+  // Fourteen icons don't (28 * 14 - 4 + 16 + 56 > 576 - 132 - 8), so the
+  // status bar takes two rows, broken where they come nearest the same
+  // width: 8 icons (220px) over 6 and the clock (236px), a top bar apart.
+  const many = [...notifications(14), clock];
+  assert.deepEqual(summary(planBottomBar(576, 3, many)), [2, 64, 1, 8, [8, 7], 236, 28]);
+  // Nine windows don't fit the one row of 8 slots that leaves: two rows of
+  // windows, the status rows level with them.
+  assert.deepEqual(summary(planBottomBar(576, 9, many)), [3, 72, 2, 8, [8, 7], 236, 36]);
+  // Seventeen don't fit those 16 slots: the last layout scrolls them.
+  assert.deepEqual(summary(planBottomBar(576, 17, many)), [4, 72, 2, 8, [8, 7], 236, 36]);
+  // Without the status bar, the windows alone: 14 a row.
+  assert.deepEqual(summary(planBottomBar(576, 14, [])), [1, 36, 1, 14, [], 0, 28]);
+  assert.deepEqual(summary(planBottomBar(576, 15, [])), [3, 72, 2, 14, [], 0, 36]);
+  assert.deepEqual(summary(planBottomBar(576, 29, [])), [4, 72, 2, 14, [], 0, 36]);
+  // A full-width (640) row has room for more.
+  assert.equal(planBottomBar(640, 3, many).level, 1);
+});
+
+test('a taller bottom switcher takes its room from the slack under a band, or from full-height windows', () => {
+  const g = geometry();
+  g.settings.appSwitcherPositionSetting.value = 'bottom';
+  g.settings.statusBarPositionSetting.value = 'bottom';
+  const before = g.rect('min');
+  assert.equal(g.setSwitcherBarHeight(64), true);
+  assert.equal(g.setSwitcherBarHeight(64), false);
+  // The band stays put, the switcher growing down into the slack under it...
+  assert.deepEqual(g.rect('min'), before);
+  assert.deepEqual({ ...g.switcherRect('min') }, { x: 32, y: 366, width: 576, height: 64 });
+  assert.equal(g.isOnSwitcherEdge(10, 420, 'min'), true);
+  // ...pushing it up only where there's too little.
+  g.settings.displayLayoutSetting.value = 'band-low';
+  assert.equal(g.windowTop('min'), 117);
+  g.settings.displayLayoutSetting.value = 'band-bottom';
+  assert.equal(g.windowTop('min'), 480 - 64 - 288);
+  assert.equal(g.switcherRect('min').y + 64, 480);
+  // Tall windows give up the height.
+  g.settings.displayLayoutSetting.value = 'tall';
+  assert.deepEqual(g.rect('max'), { x: 32, y: 1, width: 576, height: 415 });
+  g.settings.displayLayoutSetting.value = 'band-middle';
+  assert.deepEqual(g.rect('max', 'terminal'), { x: 32, y: 1, width: 576, height: 415 });
+  // Over an immersive window the switcher is an overlay of its own height,
+  // which moves no window.
+  g.setAppImmersive('onboarding', true);
+  assert.equal(g.setSwitcherBarHeight(72, 'onboarding'), false);
+  assert.deepEqual({ ...g.switcherRect('min', 'onboarding') }, { x: 0, y: 408, width: 640, height: 72 });
+  assert.equal(g.switcherRowHeight(), 64);
+  // Beside a side strip it takes nothing.
+  g.settings.appSwitcherPositionSetting.value = 'left';
+  assert.equal(g.switcherRowHeight(), 0);
+});
+
+test('the status bar takes a second row of its own before the windows do', () => {
+  const g = geometry();
+  g.settings.appSwitcherPositionSetting.value = 'bottom';
+  g.settings.statusBarPositionSetting.value = 'bottom';
+  const { chrome, heightChanges } = chromeLayer(g, { notifications: 14, windows: 3 });
+  const before = g.rect('min');
+  const [row, status] = chrome.paintParts();
+  assert.equal(g.switcherRowHeight(), 64);
+  assert.equal(heightChanges(), 1);
+  chrome.paintParts();
+  assert.equal(heightChanges(), 1, 'reported once');
+  assert.deepEqual(g.rect('min'), before);
+  // Both rows right-aligned against the row's end: 8 icons (220px) over 6
+  // and the clock (236px), a top bar's height apart.
+  assert.deepEqual([status.x, status.y, status.image.height], [608 - 236 - 2, 367, 63]);
+  const at = (p, x, y) => p.image.withDrawsBaked().pixels[(y - p.y) * p.image.width + x - p.x];
+  assert.deepEqual([at(status, 608 - 220, 371 + 2), at(status, 608 - 236, 371 + 28 + 2), at(status, 608 - 56, 371 + 28 + 8 + 2)],
+    [200, 200, 210]);
+  assert.deepEqual(Array.from(chrome.notificationKeys()), Array.from({ length: 14 }, (_, i) => `n${i}`));
+  // The windows keep one row, against the window.
+  assert.equal(chrome.windowIndexAt(45, 380, 3), 0);
+  assert.equal(chrome.windowIndexAt(45, 410, 3), null);
+  assert.equal(row.image.height, 64);
+});
+
+test('windows past one row take a second, where a selected one sits in a box', () => {
+  const g = geometry();
+  g.settings.appSwitcherPositionSetting.value = 'bottom';
+  g.settings.statusBarPositionSetting.value = 'bottom';
+  const { chrome, state } = chromeLayer(g, { notifications: 14, windows: 9 });
+  state.selectedIndex = 8;
+  const [row, status] = chrome.paintParts();
+  assert.equal(g.switcherRowHeight(), 72);
+  // Eight slots a row (what the 236px status rows leave); the ninth window
+  // starts the second row, under the first.
+  assert.deepEqual([chrome.windowIndexAt(31 + 7 * 40, 380, 9), chrome.windowIndexAt(31, 410, 9), chrome.windowIndexAt(71, 410, 9)], [7, 8, null]);
+  const at = (p, x, y) => p.image.pixels[(y - p.y) * p.image.width + x - p.x];
+  // Its selection is a box (as for a sidebar overflow column), and the
+  // separator runs unbroken over the first row.
+  assert.deepEqual([at(row, 31, 402 + 18), at(row, 31 + 5, 402 + 7)], [150, 120]);
+  assert.equal(at(row, 50, 366), 40);
+  // The status rows line up with the window rows.
+  assert.equal(status.image.withDrawsBaked().pixels[(366 + 36 + 5 + 2 - status.y) * status.image.width + 608 - 236 - status.x], 200);
 });
 
 test('a popup app switcher shows a box of window icons over the dimmed window while focused', () => {
@@ -613,15 +725,15 @@ test('a notification the switcher selects sits in a box, filled with its icon in
 test('with the selection out on a notification, the windows stay scrolled as they were', () => {
   const g = geometry();
   g.settings.appSwitcherPositionSetting.value = 'bottom';
-  const { chrome, state } = chromeLayer(g, { notifications: 2, windows: 20 });
-  state.selectedIndex = 19;
+  const { chrome, state } = chromeLayer(g, { notifications: 2, windows: 40 });
+  state.selectedIndex = 39;
   chrome.paintParts();
   const last = 32 + 10 + 2 * 40 + 4;
-  const before = chrome.windowIndexAt(last, 380, 20);
+  const before = chrome.windowIndexAt(last, 380, 40);
   assert.ok(before > 2);
   Object.assign(state, { selectedIndex: -1, selectedNotificationKey: 'n0' });
   chrome.paintParts();
-  assert.equal(chrome.windowIndexAt(last, 380, 20), before);
+  assert.equal(chrome.windowIndexAt(last, 380, 40), before);
 });
 
 // Exercise the real worker message handler with platform work stubbed out.
@@ -675,6 +787,33 @@ test('Terminal resize keeps the view identity, negotiates its grid and skips pos
   assert.deepEqual(calls, [42, 'stop', [72, 16], 'dispose', 'reconnect', 'paint']);
   resize({ width: 576, height: 260 });
   assert.equal(calls.length, 6);
+});
+
+test('the games and Roam resize in place, keeping their state, and repaint when in front', () => {
+  for (const app of ['blocks', 'freecell', 'minesweeper', 'pinball']) {
+    let paints = 0, menuSize;
+    const window = { windowId: 'test', viewportWidth: 576, viewportHeight: 443, foreground: true, phase: 'playing',
+      menu: { resize: (size) => { menuSize = size; } }, lastSubmittedFingerprint: 'old' };
+    const resize = resizeHandler(`app/apps/${app}/${app}-app.worker.ts`, {
+      windows: new Map([['test', window]]), renderAndSubmit: () => paints++,
+    });
+    resize({ width: 576, height: 415 });
+    assert.deepEqual([window.viewportWidth, window.viewportHeight, window.phase, window.lastSubmittedFingerprint, paints],
+      [576, 415, 'playing', '', 1], app);
+    assert.deepEqual({ ...menuSize }, { width: 576, height: 415 }, app);
+    window.foreground = false;
+    resize({ width: 576, height: 443 });
+    assert.deepEqual([window.viewportHeight, paints], [443, 1], app);
+  }
+  let paints = 0, viewSize;
+  const window = { windowId: 'test', viewportWidth: 576, viewportHeight: 443, menu: null, lastSubmittedFingerprint: 'old',
+    view: { resize: (...size) => { viewSize = size; } } };
+  const resize = resizeHandler('app/apps/roam/roam-app.worker.ts', {
+    window, render: () => paints++, DOC_MARGIN: 6, HEADER_HEIGHT: 30, BOTTOM_MARGIN: 6,
+  });
+  resize({ width: 576, height: 415 });
+  // The document re-wraps for the region under its header.
+  assert.deepEqual([window.viewportHeight, viewSize, window.lastSubmittedFingerprint, paints], [415, [564, 379], '', 1]);
 });
 
 test('resizing a terminal reconnects with the new grid and ignores callbacks from the old socket', () => {
