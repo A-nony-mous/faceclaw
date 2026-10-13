@@ -1163,6 +1163,23 @@ export const nightscoutAlwaysShowInTopBarSetting = new ConfigSettingBoolean({
   defaultValue: false,
   description: "Keep the Nightscout glucose graph and warnings in the top bar even when all Nightscout windows are closed.",
 });
+export const nightscoutMissedBolusAlertsSetting = new ConfigSettingBoolean({
+  id: "nightscout-missed-bolus-alerts",
+  label: "Missed-bolus alerts",
+  storageKey: "integrations.nightscout.missedBolusAlerts",
+  defaultValue: false,
+  description: "Show a notification on the glasses when glucose rises like an unannounced meal with no bolus or carbs entered. Experimental.",
+});
+export const nightscoutMissedBolusCooldownSetting = new ConfigSettingString({
+  id: "nightscout-missed-bolus-cooldown-minutes",
+  label: "Missed-bolus alert cooldown",
+  storageKey: "integrations.nightscout.missedBolusCooldownMinutes",
+  defaultValue: "120",
+  editorTitle: "Missed-bolus alert cooldown (min)",
+  normalize: normalizeNightscoutThreshold,
+  formatValue: (value) => `${value} min`,
+  description: "After a missed-bolus alert, wait at least this many minutes before showing another.",
+});
 
 export function loadNightscoutThresholds(): NightscoutThresholds {
   return {
