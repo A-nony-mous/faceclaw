@@ -489,13 +489,13 @@ export class FaceclawCommunicatorBridge {
     });
   }
 
-  /** Phone-UI preview of the current composited screen, or null if none yet. */
-  getCompositePreview(green = false): ImageSource | null {
+  /** Phone-UI preview of the current composited screen (or of `crop`'s area of it), or null if none yet. */
+  getCompositePreview(green = false, crop: { x: number; y: number; width: number; height: number } | null = null): ImageSource | null {
     const frame = this.communicator.previewComposite();
     if (!frame) return null;
     const width = Number(this.communicator.compositeWidth()), height = Number(this.communicator.compositeHeight());
     if (width <= 0 || height <= 0) return null;
-    return previewPixels(fromData(frame.pixels), width, height, green);
+    return previewPixels(fromData(frame.pixels), width, height, green, crop);
   }
 
   /** Save the current composite as a 4-bit grayscale PNG under Documents; returns the path (empty if none). Cropping is not supported on iOS. */

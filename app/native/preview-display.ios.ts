@@ -138,8 +138,8 @@ export class PreviewDisplayTarget implements DisplayTarget {
     return this.compositor.composite();
   }
 
-  getCompositePreview(green = false): ImageSource | null {
-    return previewPixels(this.compositor.composite(), this.compositor.width, this.compositor.height, green);
+  getCompositePreview(green = false, crop: { x: number; y: number; width: number; height: number } | null = null): ImageSource | null {
+    return previewPixels(this.compositor.composite(), this.compositor.width, this.compositor.height, green, crop);
   }
 
   /** Save the current composite as a 4-bit grayscale PNG under Documents; cropping is not supported on iOS. */
