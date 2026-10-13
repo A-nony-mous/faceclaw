@@ -49,7 +49,8 @@ export class MusicWidget implements GlanceWidget {
   private unsubscribe: (() => void) | null = null;
   private progressTimer: ReturnType<typeof setInterval> | null = null;
   private art: GrayImage | null = null;
-  private artKey = "";
+  /** The artVersion `art` was fetched for; -1 = not fetched yet. */
+  private artVersion = -1;
 
   start(requestRender: () => void): void {
     this.unsubscribe = mediaControllerBridge.onStateChange((state) => {
@@ -129,10 +130,8 @@ export class MusicWidget implements GlanceWidget {
   }
 
   private drawArt(image: GrayImage, media: MediaControllerState, artY: number): void {
-    const key = `${media.packageName}|${media.title}|${media.album}`;
-    // Retry while null: players often publish metadata before the bitmap.
-    if (key !== this.artKey || this.art === null) {
-      this.artKey = key;
+    if (media.artVersion !== this.artVersion) {
+      this.artVersion = media.artVersion;
       this.art = mediaControllerBridge.getAlbumArt(ART_SIZE);
     }
     if (this.art) {
