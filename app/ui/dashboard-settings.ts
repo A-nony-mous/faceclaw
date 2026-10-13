@@ -616,6 +616,19 @@ export const previewColorSetting = new ConfigSettingEnum<PreviewColor>({
     "How the phone's mirror of the glasses display renders: white/grayscale (clearest), or green to match the physical glasses.",
 });
 
+export type PreviewScaling = "scaled" | "raw";
+
+export const previewScalingSetting = new ConfigSettingEnum<PreviewScaling>({
+  id: "preview-scaling",
+  label: "Preview scaling",
+  storageKey: "phone.previewScaling",
+  defaultValue: "scaled",
+  values: ["scaled", "raw"],
+  formatValue: (value) => (value === "raw" ? "Raw" : "Scaled"),
+  description:
+    "How much of the glasses display the phone's mirror shows: Scaled centers and enlarges the part the current display mode uses; Raw shows the whole 640x480 panel.",
+});
+
 export const mirrorTouchSetting = new ConfigSettingBoolean({
   id: "mirror-touch",
   label: "Touch mirror",
