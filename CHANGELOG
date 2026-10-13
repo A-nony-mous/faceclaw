@@ -6,6 +6,7 @@
 
 * Bottom-bar app switcher switches two a multi-row layout when it runs out of space
 * T3 Code client: Add options (worktree, host, etc) when creating threads
+* Add configuration options to the glanceboard system card and music player
 
 ### Bug fixes
 

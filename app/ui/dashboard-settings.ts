@@ -1355,14 +1355,17 @@ function maskToken(token: string): string {
 
 type SettingsMenuOptions<T> = {
   onChange?: (ctx: LayerContext, newValue: T, oldValue: T) => void
+  /** Row label in place of the setting's own (for a setting shown in more than one menu). */
+  label?: string
 }
 
 export function enumSettingMenuItem<TValue extends string, TId extends string = string>(
   setting: ConfigSettingEnum<TValue, TId>,
   opts?: SettingsMenuOptions<TValue>
 ): MenuItem {
+  const label = opts?.label ?? setting.label;
   return {
-    label: setting.label,
+    label,
     description: setting.description,
     onSelect: (ctx) => {
       const current = setting.get();
@@ -1386,10 +1389,10 @@ export function enumSettingMenuItem<TValue extends string, TId extends string = 
           );
         },
       }));
-      openModalMenu(ctx, setting.label, items, Math.max(0, setting.values.indexOf(current)));
+      openModalMenu(ctx, label, items, Math.max(0, setting.values.indexOf(current)));
     },
     render: ({ image, x, y, width }) => {
-      drawRightValueMenuItem(image, getDefaultSmallFont(), x, y, width, setting.label, setting.displayValue(setting.get()));
+      drawRightValueMenuItem(image, getDefaultSmallFont(), x, y, width, label, setting.displayValue(setting.get()));
     },
   };
 }
@@ -1398,15 +1401,16 @@ export function toggleSettingMenuItem<TId extends string = string>(
   setting: ConfigSettingBoolean<TId>,
    opts?: SettingsMenuOptions<boolean>
 ): MenuItem {
+  const label = opts?.label ?? setting.label;
   return {
-    label: setting.label,
+    label,
     description: setting.description,
     onSelect: (ctx) => {
       setting.set(!setting.get());
       opts?.onChange?.(ctx, setting.get(), !setting.get());
     },
     render: ({ image, x, y, width, selected }) => {
-      drawToggleMenuItem(image, getDefaultSmallFont(), x, y, width, setting.label, setting.get(), selected);
+      drawToggleMenuItem(image, getDefaultSmallFont(), x, y, width, label, setting.get(), selected);
     },
   };
 }
