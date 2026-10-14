@@ -216,6 +216,11 @@ export class SingleNotificationLayer implements Layer {
     private readonly options: SingleNotificationLayerOptions,
   ) {}
 
+  /** Whether the layer stays up once its notification is gone: the disable-source confirmation dismisses it first. */
+  outlivesNotification(): boolean {
+    return this.confirmation !== null;
+  }
+
   paint(ctx: LayerContext, paintBelow: PaintBelow): GrayImage {
     if (this.confirmation) return this.paintConfirmation(ctx);
     const font = getDefaultSmallFont();
