@@ -9,6 +9,7 @@
 * Add configuration options to the glanceboard system card and music player
 * Glanceboard compass shows calibration-accuracy indicator
 * Status-bar widgets (nightscout, weather) are selectable
+* Roam app: Add a date-picker for navigating to a daily page
 
 ### Bug fixes
 
