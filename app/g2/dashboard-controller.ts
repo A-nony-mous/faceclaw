@@ -15,7 +15,7 @@ import { startForegroundNotification, stopForegroundNotification, updateForegrou
 import { mediaControllerBridge } from "../native/media-controller";
 import { nightscoutBridge } from "../native/nightscout-bridge";
 import { weatherBridge } from "../native/weather";
-import { ALL_NOTIFICATIONS, onAndroidNotificationPosted, readActiveNotifications } from "../native/notification-icons";
+import { ALL_NOTIFICATIONS, onAndroidNotificationPosted, onAndroidNotificationRemoved, readActiveNotifications } from "../native/notification-icons";
 import { shouldShowNotificationOnGlasses } from "../native/notification-sources";
 import { openEvenAppSettings, readEvenAppNotificationState } from "../native/even-app-conflict";
 import { grayImageToPreviewSource } from "../native/gray-image-preview";
@@ -57,6 +57,7 @@ import { flattenPlanesWithDraws, planesFingerprint, type Plane } from "../graphi
 import { prepareFrameDraws } from "../graphics/glyph-wire";
 import { createLockScreenImage, LOCK_SCREEN_SURFACE_ID } from "./lock-screen";
 import { rawInputEventToInputEvent, shell, type ShellInputOutcome } from "../ui/shell/shell";
+import { NotificationPopupDelay, notificationPopupDelayMs } from "../ui/shell/notification-popup-delay";
 import { type InputEvent } from "../ui/gestures";
 import { registerSystemTools } from "../assistant/system-tools";
 import { updateGlassesPresence } from "./glasses-presence";
@@ -338,6 +339,9 @@ class DashboardController {
   private offFirmwareInfo: (() => void) | null = null;
   private offVoiceStatus: (() => void) | null = null;
   private offAndroidNotification: (() => void) | null = null;
+  private offAndroidNotificationRemoved: (() => void) | null = null;
+  /** New notifications wait here briefly before popping up (see NotificationPopupDelay). */
+  private readonly notificationPopups = new NotificationPopupDelay((notificationKey) => this.popUpAndroidNotification(notificationKey));
   private lastInput = "waiting...";
   private lastSys = "none yet";
   private shellRenderInProgress = false;
@@ -441,11 +445,8 @@ class DashboardController {
       app.boot?.(this.buildAppContext(app));
     }
     timerEngine.onChange(() => this.refreshAlarmReliabilityWarning());
-    this.offAndroidNotification = onAndroidNotificationPosted((notificationKey) => {
-      void this.handleAndroidNotificationPosted(notificationKey).catch((error) => {
-        this.appendLog(`notification wake failed: ${this.formatError(error)}`);
-      });
-    });
+    this.offAndroidNotification = onAndroidNotificationPosted((notificationKey) => this.handleAndroidNotificationPosted(notificationKey));
+    this.offAndroidNotificationRemoved = onAndroidNotificationRemoved((notificationKey) => this.handleAndroidNotificationRemoved(notificationKey));
     readActiveNotifications(ALL_NOTIFICATIONS);
     // Settings toggled from the glasses can change what the phone UI shows
     // (e.g. the text-setting editor), so re-emit the snapshot on any change.
@@ -2758,21 +2759,45 @@ class DashboardController {
     this.schedulePreviewUpdate();
   }
 
-  private async handleAndroidNotificationPosted(notificationKey: string): Promise<void> {
+  private handleAndroidNotificationPosted(notificationKey: string): void {
+    // The tray shows the notification at once; its popup waits out a short
+    // delay, so one withdrawn right away (see NotificationPopupDelay) never shows.
     const notification = readActiveNotifications(ALL_NOTIFICATIONS).find((item) => item.key === notificationKey);
-    if (!notification || !shouldShowNotificationOnGlasses(notification.packageName)) {
-      this.requestShellRender();
-      return;
+    if (notification && shouldShowNotificationOnGlasses(notification.packageName)) {
+      this.notificationPopups.post(notificationKey, notificationPopupDelayMs(notification));
     }
-    // New notifications open a shell modal over the app viewport; if the
-    // screen was off, wake for it and go back to sleep when it is closed.
-    // Waking while already on would steal focus, so only wake from sleep.
-    const wokeScreen = shell.isScreenOn() ? false : shell.wake("sidebar");
-    if (wokeScreen) {
-      this.appendLog("android notification woke the screen");
-    }
-    shell.openNotificationModal(notificationKey, wokeScreen);
     this.requestShellRender();
+  }
+
+  private handleAndroidNotificationRemoved(notificationKey: string): void {
+    if (this.notificationPopups.withdraw(notificationKey)) {
+      this.appendLog(`android notification ${notificationKey} withdrawn before its popup`);
+    }
+    try {
+      shell.notificationRemoved(notificationKey);
+    } catch (error) {
+      this.appendLog(`closing a removed notification's popup failed: ${this.formatError(error)}`);
+    }
+    this.requestShellRender();
+  }
+
+  /** A posted notification waited out its popup delay: show it, if it is still there. */
+  private popUpAndroidNotification(notificationKey: string): void {
+    try {
+      const notification = readActiveNotifications(ALL_NOTIFICATIONS).find((item) => item.key === notificationKey);
+      if (!notification || !shouldShowNotificationOnGlasses(notification.packageName)) return;
+      // New notifications open a shell modal over the app viewport; if the
+      // screen was off, wake for it and go back to sleep when it is closed.
+      // Waking while already on would steal focus, so only wake from sleep.
+      const wokeScreen = shell.isScreenOn() ? false : shell.wake("sidebar");
+      if (wokeScreen) {
+        this.appendLog("android notification woke the screen");
+      }
+      shell.openNotificationModal(notificationKey, wokeScreen);
+      this.requestShellRender();
+    } catch (error) {
+      this.appendLog(`notification popup failed: ${this.formatError(error)}`);
+    }
   }
 
   private async playBuzzerSequence(payload: Uint8Array): Promise<void> {

@@ -239,6 +239,9 @@ export type TrayWidget = {
   openWindow: () => { window: ShellWindow; opened: boolean } | null;
 };
 
+/** A new-notification popup: the shell modal, and the notification view inside it. */
+type NotificationPopup = { modal: ShellModalLayer; content: SingleNotificationLayer };
+
 /**
  * The app switcher's selection while it is on a status bar item rather than
  * a window's icon (bottom switcher only; see Shell.moveSelection): a
@@ -434,7 +437,7 @@ class Shell {
   private readonly trayIcons = new Map<string, { icon: GrayImage; widget?: TrayWidget }>();
   private activeVoiceLayer: VoiceInputLayer | null = null;
   private activeKeyboardLayer: KeyboardInputLayer | null = null;
-  private readonly notificationModals = new NotificationModalQueue<ShellModalLayer>({
+  private readonly notificationModals = new NotificationModalQueue<NotificationPopup>({
     open: (notificationKey) => this.pushNotificationModal(notificationKey),
     isAvailable: (notificationKey) => {
       const notification = readActiveNotifications(ALL_NOTIFICATIONS).find((item) => item.key === notificationKey);
@@ -853,25 +856,40 @@ class Shell {
     this.config.requestShellRender();
   }
 
-  private pushNotificationModal(notificationKey: string): ShellModalLayer {
-    const modal: ShellModalLayer = new ShellModalLayer(
-      new SingleNotificationLayer(notificationKey, {
-        origin: "new-notification-modal",
-        onClose: () => this.closeNotificationModal(modal),
-      }),
-      this.config.actions,
-      () => this.notificationModals.removed(modal, this.screenOn),
-    );
-    this.stack.push(modal);
-    return modal;
+  /**
+   * A notification went away on the phone: cancelled by its source (e.g. a
+   * placeholder replaced moments later by the real notification under another
+   * key), or dismissed. A popup queued for it is dropped, and one showing it
+   * closes so the next one opens, as if the user had closed it -- unless it
+   * is asking to confirm turning off its source, which outlives the
+   * notification it dismissed.
+   */
+  notificationRemoved(notificationKey: string): void {
+    const popup = this.notificationModals.withdrawn(notificationKey);
+    if (popup && !popup.content.outlivesNotification()) {
+      this.closeNotificationModal(popup);
+    }
   }
 
-  private closeNotificationModal(modal: ShellModalLayer): void {
+  private pushNotificationModal(notificationKey: string): NotificationPopup {
+    const content = new SingleNotificationLayer(notificationKey, {
+      origin: "new-notification-modal",
+      onClose: () => this.closeNotificationModal(popup),
+    });
+    const popup: NotificationPopup = {
+      content,
+      modal: new ShellModalLayer(content, this.config.actions, () => this.notificationModals.removed(popup, this.screenOn)),
+    };
+    this.stack.push(popup.modal);
+    return popup;
+  }
+
+  private closeNotificationModal(popup: NotificationPopup): void {
     // The queue first: it opens the next notification or puts the screen back
     // to sleep, and then ignores the removal below. remove() rather than a
     // pop, so a menu opened over the modal doesn't leave it stuck.
-    this.notificationModals.closed(modal);
-    this.stack.remove(modal);
+    this.notificationModals.closed(popup);
+    this.stack.remove(popup.modal);
     this.config.requestShellRender();
   }
 

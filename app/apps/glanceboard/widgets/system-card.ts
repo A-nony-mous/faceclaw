@@ -8,7 +8,7 @@ import {
 } from "../../../graphics/battery";
 import { type GrayImage, type UiFont } from "../../../graphics/image";
 import { ensureLocationPermission, hasLocationPermission } from "../../../native/location-permissions";
-import { onAndroidNotificationPosted, readActiveNotificationIcons } from "../../../native/notification-icons";
+import { onAndroidNotificationsChanged, readActiveNotificationIcons } from "../../../native/notification-icons";
 import { readPhoneBatteryState } from "../../../native/phone-battery";
 import { weatherBridge } from "../../../native/weather";
 import { formatClockDate, formatClockTime } from "../../../ui/clock-format";
@@ -162,7 +162,7 @@ export class SystemCardWidget implements GlanceWidget {
   start(requestRender: () => void): void {
     this.requestRender = requestRender;
     this.scheduleMinuteTick();
-    this.unsubscribeNotifications = onAndroidNotificationPosted(() => this.requestRender?.());
+    this.unsubscribeNotifications = onAndroidNotificationsChanged(() => this.requestRender?.());
     this.unsubscribeSettings = onAnySettingChanged(() => this.requestRender?.());
     this.unsubscribeTimers = timerEngine.onChange(() => {
       this.syncSecondTick();
