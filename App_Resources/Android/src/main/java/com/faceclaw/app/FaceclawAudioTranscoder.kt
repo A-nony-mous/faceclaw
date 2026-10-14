@@ -78,6 +78,16 @@ class FaceclawAudioTranscoder(
             return
         }
         val size = File(outputPath).length()
+        if (size <= 0) {
+            Log.w(TAG, "transcode produced no output for $wavPath")
+            File(outputPath).delete()
+            try {
+                listener?.onError("transcode produced no output")
+            } catch (listenerError: Throwable) {
+                Log.w(TAG, "transcode error listener failed", listenerError)
+            }
+            return
+        }
         try {
             listener?.onDone(outputPath, size)
         } catch (t: Throwable) {
@@ -103,6 +113,7 @@ class FaceclawAudioTranscoder(
 
         val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
         var muxer: MediaMuxer? = null
+        var muxerStopped = false
         var input: FileInputStream? = null
         try {
             codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
@@ -169,6 +180,11 @@ class FaceclawAudioTranscoder(
                     }
                 }
             }
+            // stop() writes the index (moov); without it the file won't play, so its failure
+            // (storage full, I/O error, a muxer that never started) fails the transcode rather
+            // than reporting a broken output as done.
+            muxerStopped = true
+            muxer.stop()
         } finally {
             if (input != null) {
                 try {
@@ -182,9 +198,12 @@ class FaceclawAudioTranscoder(
             }
             codec.release()
             if (muxer != null) {
-                try {
-                    muxer.stop()
-                } catch (ignored: Throwable) {
+                if (!muxerStopped) {
+                    // Already failing; the output is deleted either way.
+                    try {
+                        muxer.stop()
+                    } catch (ignored: Throwable) {
+                    }
                 }
                 muxer.release()
             }

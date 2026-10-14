@@ -434,6 +434,11 @@ export class FaceclawVoiceControlBridge {
     return this.suspendedHolders.size > 0 || this.suspendedRaw;
   }
 
+  /** Whether `holder` holds the mic, including across a session outage. */
+  holdsCapture(holder: CaptureHolder): boolean {
+    return this.captureHolders.has(holder) || this.suspendedHolders.has(holder);
+  }
+
   /** Whether anyone holds the mic, including across a session outage. */
   isCaptureHeld(): boolean {
     return this.captureHolders.size > 0 || this.suspendedHolders.size > 0;

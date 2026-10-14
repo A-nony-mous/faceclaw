@@ -761,6 +761,28 @@ class FaceclawConversationStore private constructor(context: Context) : SQLiteOp
     }
 
     /**
+     * Closed sessions whose audio is still the WAV: a transcode that never finished (the process
+     * died mid-transcode, or recovery failed partway on an earlier boot). Returns a JSON array of
+     * {id, audioPath}.
+     */
+    fun listUntranscodedSessions(): String {
+        val sessions = JSONArray()
+        readableDatabase.rawQuery(
+            "SELECT id, audio_path FROM sessions"
+                + " WHERE ended_at IS NOT NULL AND audio_codec = 'wav' AND audio_path IS NOT NULL",
+            null,
+        ).use { c ->
+            while (c.moveToNext()) {
+                val row = JSONObject()
+                row.put("id", c.getLong(0))
+                row.put("audioPath", c.getString(1))
+                sessions.put(row)
+            }
+        }
+        return sessions.toString()
+    }
+
+    /**
      * Delete recordings in dirPath that no session's audio_path names: files a session row never
      * learned about, or partial transcoder output. Matched by file name, so a storage move that
      * changed the directory's absolute path can't make live recordings look orphaned. Only call

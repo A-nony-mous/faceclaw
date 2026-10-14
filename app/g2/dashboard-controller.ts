@@ -165,7 +165,8 @@ const SHELL_REFRESH_INTERVAL_MS = 60_000;
 // schedules a refresh), so this just covers anything that slips through.
 const PREVIEW_INTERVAL_MS = 1_000;
 const SCREEN_TIMEOUT_CHECK_MS = 1_000;
-// voiceActivity holder for Transcribe's continuous capture.
+// voiceActivity holder for continuous capture (Transcribe, Calculator's
+// continuous mode, the Teleprompter reader).
 const CONTINUOUS_CAPTURE_HOLDER = "continuous-capture";
 // The lock screen is a short notice, not something to read at leisure; it
 // ignores the screen-timeout setting (including "never").
@@ -391,8 +392,8 @@ class DashboardController {
       endTextSettingEdit: () => this.endTextSettingEdit(),
       startVoiceCapture: (endpointing = false) => this.startVoiceCapture(endpointing),
       stopVoiceCapture: () => this.stopVoiceCapture(),
-      startContinuousVoiceCapture: () => this.startContinuousVoiceCapture(),
-      stopContinuousVoiceCapture: () => this.stopContinuousVoiceCapture(),
+      startContinuousVoiceCapture: (client: string) => this.startContinuousVoiceCapture(client),
+      stopContinuousVoiceCapture: (client: string) => this.stopContinuousVoiceCapture(client),
       playBuzzerSequence: (payload: Uint8Array) => this.playBuzzerSequence(payload),
     };
     this.sharedActions = sharedActions;
@@ -1737,6 +1738,10 @@ class DashboardController {
       await nightscoutBridge.stop().catch(() => {});
       weatherBridge.setSessionActive(false);
       voiceControlBridge.stop();
+      // The parked continuous capture went with it; the next session starts
+      // it afresh for any window still asking.
+      this.continuousAttemptedOn = undefined;
+      this.syncContinuousClaim();
       if (communicator) {
         await communicator.setFaceclawWakeLeaseEnabled(false).catch(() => false);
         await communicator.close().catch(() => {});
@@ -2061,17 +2066,53 @@ class DashboardController {
     return voiceControlBridge.stopPushToTalk();
   }
 
-  private startContinuousVoiceCapture(): void {
-    // Continuous capture (Transcribe) owns the glasses mic for as long as it
-    // runs. Claim it before the capture starts so the Microphones app and
-    // EvenHub mic apps stand down first, as they do for the voice dialog.
-    voiceActivity.setActive(true, CONTINUOUS_CAPTURE_HOLDER);
-    void this.beginVoiceCapture("continuous");
+  // Windows that want continuous capture. They share one stream, which runs
+  // while any of them wants it: one window letting go must not cut off another.
+  private readonly continuousClients = new Set<string>();
+  // The connection a continuous-capture start was last tried on (undefined:
+  // none since the last teardown), so a window waiting on the glasses is
+  // retried once per new session rather than on every frame.
+  private continuousAttemptedOn: FaceclawCommunicatorBridge | null | undefined = undefined;
+
+  private startContinuousVoiceCapture(client: string): void {
+    this.continuousClients.add(client);
+    this.ensureContinuousCapture(true);
   }
 
-  private stopContinuousVoiceCapture(): void {
-    voiceControlBridge.stopContinuousCapture();
-    voiceActivity.setActive(false, CONTINUOUS_CAPTURE_HOLDER);
+  private stopContinuousVoiceCapture(client: string): void {
+    if (!this.continuousClients.delete(client) || this.continuousClients.size > 0) return;
+    try {
+      voiceControlBridge.stopContinuousCapture();
+    } finally {
+      this.syncContinuousClaim();
+    }
+  }
+
+  /**
+   * Start continuous capture for the windows asking for it, unless it is
+   * running or parked across a session outage. A window restored at launch
+   * asks before the glasses connect, so this is retried on each new session
+   * (from resumeVoiceCapture); `force` retries on the same one.
+   */
+  private ensureContinuousCapture(force = false): void {
+    if (this.continuousClients.size === 0 || voiceControlBridge.holdsCapture("continuous")) return;
+    if (!force && this.continuousAttemptedOn === this.communicator) return;
+    this.continuousAttemptedOn = this.communicator;
+    void this.beginVoiceCapture("continuous").finally(() => this.syncContinuousClaim());
+  }
+
+  /**
+   * Continuous capture's claim on the mic (the Microphones app and EvenHub
+   * mic apps stand down while it is held) follows whether the capture really
+   * holds the mic, not merely whether a window asked: a start that never
+   * happened (no glasses yet, permission refused) must not idle every other
+   * mic user.
+   */
+  private syncContinuousClaim(): void {
+    voiceActivity.setActive(
+      this.continuousClients.size > 0 && voiceControlBridge.holdsCapture("continuous"),
+      CONTINUOUS_CAPTURE_HOLDER,
+    );
   }
 
   /**
@@ -2099,15 +2140,19 @@ class DashboardController {
   }
 
   /**
-   * Restart the mic for a capture that a previous session left holding. Cheap
-   * to call per frame: it does nothing unless one is actually parked.
+   * Restart the mic for a capture that a previous session left holding, and
+   * start a continuous capture asked for before this session. Cheap to call
+   * per frame: it does nothing unless one is actually waiting.
    */
   private resumeVoiceCapture(): void {
-    if (!voiceControlBridge.hasSuspendedCapture()) return;
     const communicator = this.communicator;
     if (!communicator || this.phase !== "connected") return;
-    this.appendLog("resuming voice capture on the new glasses session");
-    voiceControlBridge.resumeCapture(this.voiceCaptureOptions(communicator));
+    if (voiceControlBridge.hasSuspendedCapture()) {
+      this.appendLog("resuming voice capture on the new glasses session");
+      voiceControlBridge.resumeCapture(this.voiceCaptureOptions(communicator));
+    }
+    // A continuous capture asked for before this session existed.
+    this.ensureContinuousCapture();
   }
 
   /**
@@ -2152,6 +2197,11 @@ class DashboardController {
         if (kind === "ptt") {
           voiceControlBridge.startPushToTalk(options);
         } else {
+          // Every window may have let go while permission was pending.
+          if (this.continuousClients.size === 0) return;
+          // Claimed before the capture starts so the Microphones app and
+          // EvenHub mic apps stand down first, as they do for the voice dialog.
+          voiceActivity.setActive(true, CONTINUOUS_CAPTURE_HOLDER);
           voiceControlBridge.startContinuousCapture(options);
         }
       })

@@ -16,6 +16,7 @@ import {
   type HeadOrientation,
 } from "./dsp";
 import { micArrayController, micControlSupported, loadMicConfig, saveMicConfig } from "./mic-control";
+import { CaptionClock } from "./caption-clock";
 import { micModelPath } from "./mic-models";
 import {
   MIC_CHANNEL_KEYS,
@@ -183,16 +184,16 @@ type ConversationRecord = { rowId: number; sentimentSum: number; sentimentCount:
 
 /**
  * One caption-engine instance. Its utterance times are on its own sample
- * clock, converted with the wall time and recording offset taken at its
- * start; an engine restarted after a failure is a new run on the same
- * conversation.
+ * clock (audio fed to it), converted to wall time by `clock` and to
+ * recording time with the recording offset taken at its start; an engine
+ * restarted after a failure is a new run on the same conversation.
  */
 type CaptionRun = {
   engine: any;
   // The Java listener proxy must stay referenced or it gets GC'd.
   listener: any;
-  startWallMs: number;
   audioBaseMs: number;
+  clock: CaptionClock;
   conversation: ConversationRecord | null;
   /** The app session (start() count) it belongs to. */
   generation: number;
@@ -973,7 +974,8 @@ class MicSession {
   // ---- shared audio consumers ----
 
   private feedPcm(pcm: Uint8Array): void {
-    const engine = this.captionRun?.engine;
+    const run = this.captionRun;
+    const engine = run?.engine;
     if (!engine && !this.recorder) return;
     let javaBytes = toJavaBytes(pcm);
     if (this.ancOn && this.suppressor) {
@@ -983,9 +985,10 @@ class MicSession {
         console.warn(`noise suppression failed: ${error}`);
       }
     }
-    if (engine) {
+    if (run) {
       try {
-        engine.acceptPcm(javaBytes);
+        run.engine.acceptPcm(javaBytes);
+        run.clock.noteFed(Number(javaBytes.length), Date.now());
       } catch (error) {
         console.warn(`caption feed failed: ${error}`);
       }
@@ -1046,9 +1049,9 @@ class MicSession {
       const run: CaptionRun = {
         engine,
         listener: null,
-        startWallMs: Date.now(),
         // A restarted engine's clock starts at zero partway into the recording.
         audioBaseMs: this.recorder ? Number(this.recorder.getDurationMs()) : 0,
+        clock: new CaptionClock(SAMPLE_RATE, Date.now()),
         conversation: this.conversation,
         generation: this.sessionGeneration,
         stopTimer: null,
@@ -1411,7 +1414,7 @@ class MicSession {
       lang: "",
       emotion: analyzed?.emotion ?? "",
       sentiment: analyzed?.score ?? 0,
-      atMs: run.startWallMs + startMs,
+      atMs: run.clock.wallMs(startMs),
     };
     if (shown) {
       this.captionLines.push(line);
@@ -1441,8 +1444,8 @@ class MicSession {
             JSON.stringify({
               sessionId: conversation.rowId,
               speakerId: match?.profile.id,
-              startedAt: run.startWallMs + startMs,
-              endedAt: run.startWallMs + endMs,
+              startedAt: run.clock.wallMs(startMs),
+              endedAt: run.clock.wallMs(endMs),
               audioOffsetMs: run.audioBaseMs + startMs,
               text: line.text,
               sentiment: line.sentiment,
@@ -1517,8 +1520,10 @@ class MicSession {
 
   private startRecording(conversation: ConversationRecord): void {
     try {
+      const dir = recordingsDir();
+      if (!dir) throw new Error("external storage unavailable");
       const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-      this.recordingPath = `${recordingsDir()}/conversation-${stamp}.wav`;
+      this.recordingPath = `${dir}/conversation-${stamp}.wav`;
       this.recorder = new com.faceclaw.app.FaceclawWavRecorder(this.recordingPath, SAMPLE_RATE, 1);
     } catch (error) {
       console.warn(`recording start failed: ${error}`);
@@ -1582,32 +1587,56 @@ class MicSession {
 
   /**
    * Repair what a dead process left behind, once per process at boot:
-   * conversations it never closed, their unfinished recordings (header
-   * patched to the audio on disk, then transcoded), and recording files no
-   * session row knows about.
+   * conversations it never closed, recording files no session row knows
+   * about, and recordings never transcoded (header patched to the audio on
+   * disk, then transcoded). The steps fail independently, and the last one
+   * works from what the store still holds as WAV rather than from what this
+   * boot closed, so whatever a failure leaves is picked up by a later boot.
    */
   recoverInterruptedConversations(): void {
     if (!global.isAndroid || recoveryDone || this.running) return;
     recoveryDone = true;
+    let store: any;
     try {
-      const store = this.store();
-      const closed = JSON.parse(
-        String(store.closeInterruptedSessions(JSON.stringify(this.openConversationRows()))),
-      ) as Array<{ id: number; audioPath: string | null; audioCodec: string | null }>;
-      // Before any transcode below starts writing, so its output isn't swept.
-      const removed = Number(store.deleteUnreferencedRecordings(recordingsDir()));
-      for (const session of closed) {
-        const rowId = Number(session.id);
-        if (session.audioPath && session.audioCodec === "wav") {
-          recoverRecording(store, rowId, String(session.audioPath));
-        }
-        generateSessionInsights(rowId);
-      }
-      if (closed.length > 0 || removed > 0) {
-        console.log(`mic recovery: closed ${closed.length} conversation(s), removed ${removed} orphaned recording(s)`);
-      }
+      store = this.store();
     } catch (error) {
       console.warn(`mic recovery failed: ${error}`);
+      return;
+    }
+    let closed: number[] = [];
+    try {
+      const rows = JSON.parse(
+        String(store.closeInterruptedSessions(JSON.stringify(this.openConversationRows()))),
+      ) as Array<{ id: number }>;
+      closed = rows.map((row) => Number(row.id));
+    } catch (error) {
+      console.warn(`mic recovery: closing conversations failed: ${error}`);
+    }
+    for (const rowId of closed) generateSessionInsights(rowId);
+    // Before any transcode below starts writing, so its output isn't swept.
+    let removed = 0;
+    try {
+      const dir = recordingsDir();
+      if (dir) removed = Number(store.deleteUnreferencedRecordings(dir));
+    } catch (error) {
+      console.warn(`mic recovery: orphan sweep failed: ${error}`);
+    }
+    // The ones just closed, plus any whose transcode died with an earlier
+    // process; patching an already-finished header changes nothing.
+    let untranscoded: Array<{ id: number; audioPath: string }> = [];
+    try {
+      untranscoded = JSON.parse(String(store.listUntranscodedSessions())) as typeof untranscoded;
+    } catch (error) {
+      console.warn(`mic recovery: listing recordings failed: ${error}`);
+    }
+    for (const session of untranscoded) {
+      recoverRecording(store, Number(session.id), String(session.audioPath));
+    }
+    if (closed.length > 0 || removed > 0 || untranscoded.length > 0) {
+      console.log(
+        `mic recovery: closed ${closed.length} conversation(s), removed ${removed} orphaned recording(s), ` +
+          `finishing ${untranscoded.length} recording(s)`,
+      );
     }
   }
 
@@ -1694,9 +1723,11 @@ function moonshineModelDir(): string {
   return `${context.getFilesDir().getAbsolutePath()}/faceclaw-voice-asr/sherpa-onnx-moonshine-base-en-quantized-2026-02-27`;
 }
 
-function recordingsDir(): string {
+/** Where recordings live, or null while external storage is unavailable. */
+function recordingsDir(): string | null {
   const context = Utils.android.getApplicationContext();
-  return `${context.getExternalFilesDir(null).getAbsolutePath()}/mic-recordings`;
+  const base = context.getExternalFilesDir(null);
+  return base ? `${base.getAbsolutePath()}/mic-recordings` : null;
 }
 
 function deleteFile(path: string): void {
@@ -1746,9 +1777,9 @@ function transcodeRecording(store: any, rowId: number, wavPath: string): void {
 }
 
 /**
- * Keep a recording its process died writing: patch the WAV header to the
- * audio on disk, then transcode it as a normal stop would. Too short (or
- * gone) and it is dropped from the session instead.
+ * Finish a recording left as WAV (its process died writing or transcoding
+ * it): patch the header to the audio on disk, then transcode it as a normal
+ * stop would. Too short (or gone) and it is dropped from the session instead.
  */
 function recoverRecording(store: any, rowId: number, wavPath: string): void {
   try {
