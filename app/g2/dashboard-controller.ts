@@ -1974,8 +1974,8 @@ class DashboardController {
     const foreground = shell.foregroundWindow();
     const stripShown = sidebarStripVisible(shell.getFocus(), foreground?.appId);
     this.appendLog(`mirror tap at ${x},${y}`);
-    if (!shell.hasOverlay() && shell.focusNotificationAt(x, y)) {
-      this.appendLog("mirror tap: notification icon");
+    if (!shell.hasOverlay() && shell.focusStatusItemAt(x, y)) {
+      this.appendLog("mirror tap: status bar item");
       this.requestShellRender();
       return;
     }
@@ -2397,7 +2397,7 @@ class DashboardController {
    * An in-process singleton app's window, opened in the background (neither
    * foregrounded nor focused) unless it is open already: for the shell to
    * bring forward itself (the Notifications window under a notification
-   * selected in the switcher). The bridge runs calls in order, so the
+   * selected in the switcher, or an app widget's window under the widget). The bridge runs calls in order, so the
    * shell may foreground it at once: its surface's visibility is settled
    * when the configure call is queued, ahead of any frame.
    */
@@ -2486,6 +2486,8 @@ class DashboardController {
       launchApp: (appId, params) => this.launchApp(appId, params),
       uninstallApp: (appId) => this.uninstallApp(appId),
       launchInProcessApp: (windowId, surfaceId, create) => this.launchInProcessApp(windowId, surfaceId, create),
+      openInProcessAppInBackground: (windowId, surfaceId, create) =>
+        this.openInProcessAppInBackground(windowId, surfaceId, create),
       ensureWorkerHost: (createWorker) => this.ensureWorkerHost(app.appId, createWorker),
       submitWindowFrame: (surfaceId, planes, paintMs, frameId) =>
         this.submitWindowFrame(surfaceId, planes, paintMs, frameId),

@@ -48,7 +48,14 @@ import {
   windowBorderSetting,
 } from "../dashboard-settings";
 import { onAmbientCardsChanged } from "./ambient-cards";
-import { ShellChromeLayer, sidebarContentSpan, type ShellChromeState, type ShellChromeWindow } from "./chrome-layer";
+import {
+  sameStatusItem,
+  ShellChromeLayer,
+  sidebarContentSpan,
+  type ShellChromeState,
+  type ShellChromeWindow,
+  type StatusItem,
+} from "./chrome-layer";
 import { ShellModalLayer } from "./modal-layer";
 import { NotificationModalQueue } from "./notification-modal-queue";
 import { ALL_NOTIFICATIONS, readActiveNotifications } from "../../native/notification-icons";
@@ -218,21 +225,38 @@ export type ShellConfig = {
 };
 
 /**
- * The app switcher's selection while it is on a notification's icon rather
- * than a window's (bottom switcher only; see Shell.moveSelection). The
- * Notifications app's window is the foreground window meanwhile, with the
- * notification's detail view on top of its stack.
+ * What makes an app's tray icon (see Shell.setTrayIcon) a widget the app
+ * switcher's selection can move onto, as it can onto a notification's icon
+ * (bottom switcher only; see Shell.moveSelection).
  */
-type NotificationSelection = {
-  key: string;
-  /** Where the notification's icon sat among them, for once it has gone. */
-  index: number;
-  host: InProcessWindow;
-  layer: SingleNotificationLayer;
+export type TrayWidget = {
   /**
-   * The Notifications window was opened for the selection: it has no
-   * switcher icon of its own, and closes once the selection moves off the
-   * notifications.
+   * The window to show while the selection is on the widget, opened in the
+   * background (neither foregrounded nor focused) unless it is open
+   * already; `opened` says this call opened it, and the shell closes it
+   * again once the selection moves on. Null when it can't be opened.
+   */
+  openWindow: () => { window: ShellWindow; opened: boolean } | null;
+};
+
+/**
+ * The app switcher's selection while it is on a status bar item rather than
+ * a window's icon (bottom switcher only; see Shell.moveSelection): a
+ * notification's icon or an app widget. The item's window is the
+ * foreground window meanwhile: a notification's is the Notifications app's,
+ * with the notification's detail view on top of its stack; a widget's is
+ * whatever window it gives (TrayWidget.openWindow).
+ */
+type StatusSelection = {
+  item: StatusItem;
+  /** Where the item sat among the selectable ones, for once it has gone. */
+  index: number;
+  host: ShellWindow;
+  /** A notification's detail view, and the host's stack it is on. */
+  detail: { stack: LayerStack; layer: SingleNotificationLayer } | null;
+  /**
+   * The host window was opened for the selection: it has no switcher icon
+   * of its own, and closes once the selection moves off it.
    */
   transient: boolean;
   /** The window selected before, to go back to when the screen sleeps. */
@@ -403,11 +427,11 @@ class Shell {
   };
   private readonly batteryListeners = new Set<() => void>();
   private attention = new Map<string, boolean>();
-  /** Set while the switcher's selection is on a notification (see NotificationSelection). */
-  private selectedNotification: NotificationSelection | null = null;
+  /** Set while the switcher's selection is on a status bar item (see StatusSelection). */
+  private selectedStatus: StatusSelection | null = null;
   // App-provided top-bar tray icons, keyed by owner id; drawn between the
   // notification icons and the battery indicators.
-  private readonly trayIcons = new Map<string, GrayImage>();
+  private readonly trayIcons = new Map<string, { icon: GrayImage; widget?: TrayWidget }>();
   private activeVoiceLayer: VoiceInputLayer | null = null;
   private activeKeyboardLayer: KeyboardInputLayer | null = null;
   private readonly notificationModals = new NotificationModalQueue<ShellModalLayer>({
@@ -548,9 +572,9 @@ class Shell {
   removeWindow(windowId: string): void {
     const index = this.windows.findIndex((w) => w.windowId === windowId);
     if (index < 0) return;
-    // Closing the Notifications window under a selected notification (from
-    // the system menu) takes the selection with it.
-    if (this.selectedNotification?.host.window.windowId === windowId) this.selectedNotification = null;
+    // Closing the window under a selected status bar item (from the system
+    // menu) takes the selection with it.
+    if (this.selectedStatus?.host.windowId === windowId) this.selectedStatus = null;
     const wasSelected = index === this.selectedIndex;
     this.windows.splice(index, 1);
     this.attention.delete(windowId);
@@ -626,13 +650,19 @@ class Shell {
   /**
    * Set or clear an app's top-bar tray icon (a small grayscale image, drawn
    * between the notification icons and the battery indicators). Small and
-   * infrequently updated by design; not a framebuffer.
+   * infrequently updated by design; not a framebuffer. With `widget`, the
+   * switcher's selection can move onto it. A widget that goes, or stops
+   * being one, while the selection is on it leaves the selection on its
+   * window, as an ordinary window.
    */
-  setTrayIcon(ownerId: string, icon: GrayImage | null): void {
+  setTrayIcon(ownerId: string, icon: GrayImage | null, widget?: TrayWidget): void {
     if (icon) {
-      this.trayIcons.set(ownerId, icon);
+      this.trayIcons.set(ownerId, { icon, widget });
     } else if (!this.trayIcons.delete(ownerId)) {
       return;
+    }
+    if ((!icon || !widget) && sameStatusItem(this.selectedStatus?.item, { kind: "widget", key: ownerId })) {
+      this.endStatusSelection(true);
     }
     this.config.requestShellRender();
   }
@@ -678,16 +708,19 @@ class Shell {
   }
 
   /**
-   * A touch from the phone's mirror on a selectable notification's icon:
-   * select it and go into its detail view, as a touch on a window's icon
-   * focuses that window. False when there is no such icon at (x, y).
+   * A touch from the phone's mirror on a selectable status bar item's icon
+   * (a notification's or an app widget's): select it and go into its
+   * window, as a touch on a window's icon focuses that window. False when
+   * there is no such icon at (x, y).
    */
-  focusNotificationAt(x: number, y: number): boolean {
-    const keys = this.selectableNotificationKeys();
-    const key = this.chrome.notificationKeyAt(x, y);
-    if (!key || !keys.includes(key)) return false;
-    this.selectNotification(key, keys.indexOf(key));
-    const host = this.selectedNotification?.key === key ? this.selectedNotification.host.window : null;
+  focusStatusItemAt(x: number, y: number): boolean {
+    const items = this.selectableStatusItems();
+    const touched = this.chrome.statusItemAt(x, y);
+    const index = items.findIndex((item) => sameStatusItem(item, touched));
+    if (index < 0) return false;
+    this.selectStatusItem(items[index]!, index);
+    const selected = this.selectedStatus;
+    const host = selected && sameStatusItem(selected.item, touched) ? selected.host : null;
     if (!host) return false;
     const alreadyFocused = this.isFocusTarget(host);
     this.focus = "window";
@@ -755,11 +788,11 @@ class Shell {
 
   /**
    * Turn the screen off, closing any shell overlays. Sidebar selection is
-   * kept, except that one on a notification goes back to its window.
+   * kept, except that one on a status bar item goes back to its window.
    */
   sleep(): void {
     if (!this.screenOn) return;
-    this.returnFromNotification();
+    this.returnFromStatusItem();
     this.cancelEscapeMenuTimer();
     this.screenOn = false;
     this.stack.clearToBase();
@@ -777,9 +810,9 @@ class Shell {
     const target = this.windows[index];
     const alreadyFocused = this.isFocusTarget(target);
     this.setSelectedIndex(index);
-    // Asked for by id, the Notifications window stays, whether or not it
-    // was opened for a selected notification.
-    this.endNotificationSelection(target === this.selectedNotification?.host.window);
+    // Asked for by id, a status bar item's window stays, whether or not it
+    // was opened for the selection.
+    this.endStatusSelection(target === this.selectedStatus?.host);
     this.focus = "window";
     if (!alreadyFocused) target?.onFocus?.(this.lastInput);
     this.syncInputFocus();
@@ -1164,115 +1197,143 @@ class Shell {
 
   /**
    * Step the switcher's selection through the windows and then, with a
-   * bottom switcher, on through the notifications whose icons are showing,
-   * wrapping round at either end.
+   * bottom switcher, on through the status bar's selectable items whose
+   * icons are showing (notifications, then app widgets), wrapping round at
+   * either end.
    */
   private moveSelection(delta: number): void {
     const windows = this.switcherWindows();
-    const keys = this.selectableNotificationKeys();
-    const count = windows.length + keys.length;
+    const items = this.selectableStatusItems();
+    const count = windows.length + items.length;
     if (!count) return;
     let current = this.selectedIndex;
-    const selected = this.selectedNotification;
+    const selected = this.selectedStatus;
     if (selected) {
-      // Once its notification has gone, the selection stands between the
+      // Once its item has gone, the selection stands between the
       // neighbours it left.
-      const at = keys.indexOf(selected.key);
-      current = windows.length + (at >= 0 ? at : Math.min(selected.index, keys.length) - (delta > 0 ? 1 : 0));
+      const at = items.findIndex((item) => sameStatusItem(item, selected.item));
+      current = windows.length + (at >= 0 ? at : Math.min(selected.index, items.length) - (delta > 0 ? 1 : 0));
     }
     const next = (((current + delta) % count) + count) % count;
     if (next < windows.length) {
       this.selectSwitcherWindow(windows[next]!);
     } else {
-      this.selectNotification(keys[next - windows.length]!, next - windows.length);
+      this.selectStatusItem(items[next - windows.length]!, next - windows.length);
     }
   }
 
   /**
-   * Windows with an icon in the switcher: all of them, except a
-   * Notifications window opened just to show a selected notification.
+   * Windows with an icon in the switcher: all of them, except a window
+   * opened just to show a selected status bar item.
    */
   private switcherWindows(): ShellWindow[] {
-    const hidden = this.selectedNotification?.transient ? this.selectedNotification.host.window : null;
+    const hidden = this.selectedStatus?.transient ? this.selectedStatus.host : null;
     return hidden ? this.windows.filter((window) => window !== hidden) : this.windows;
   }
 
   /**
-   * Keys of the notifications the switcher's selection can move onto, left
-   * to right: those whose icons are showing, with a bottom switcher (the
-   * selection reaches them past the last window).
+   * The status bar items the switcher's selection can move onto, in order:
+   * with a bottom switcher (the selection reaches them past the last
+   * window), those whose icons are showing that have a window to show,
+   * which notifications have where the host gives the Notifications window,
+   * and app widgets always do.
    */
-  private selectableNotificationKeys(): string[] {
-    return this.config.openNotificationsWindow && switcherPosition() === "bottom" ? this.chrome.notificationKeys() : [];
+  private selectableStatusItems(): StatusItem[] {
+    if (switcherPosition() !== "bottom") return [];
+    return this.chrome.statusItems().filter((item) => item.kind === "notification"
+      ? !!this.config.openNotificationsWindow
+      : !!this.trayIcons.get(item.key)?.widget);
   }
 
-  /** Move the switcher's selection onto a window, off a notification if it was on one. */
+  /** Move the switcher's selection onto a window, off a status bar item if it was on one. */
   private selectSwitcherWindow(window: ShellWindow): void {
-    // Foreground first, so a Notifications window closing with the
-    // notification selection can't hand the foreground elsewhere first.
+    // Foreground first, so a status bar item's window closing with its
+    // selection can't hand the foreground elsewhere first.
     this.setSelectedIndex(this.windows.indexOf(window));
-    this.endNotificationSelection(window === this.selectedNotification?.host.window);
+    this.endStatusSelection(window === this.selectedStatus?.host);
   }
 
   /**
-   * Move the switcher's selection onto a notification: the Notifications
-   * window (opened in the background first, if need be) comes to the
-   * foreground showing its detail view.
+   * Move the switcher's selection onto a status bar item: its window
+   * (opened in the background first, if need be) comes to the foreground,
+   * a notification's showing its detail view. The window the selection was
+   * on before is left as endStatusSelection leaves it, unless it is this
+   * one too.
    */
-  private selectNotification(key: string, index: number): void {
-    const selected = this.selectedNotification;
-    if (selected) {
-      selected.index = index;
-      if (selected.key === key) return;
-      selected.host.stack.popThrough(selected.layer);
-      selected.key = key;
-      selected.layer = this.notificationDetailLayer(key);
-      selected.host.stack.push(selected.layer);
-      selected.host.requestRender();
+  private selectStatusItem(item: StatusItem, index: number): void {
+    const previous = this.selectedStatus;
+    if (previous && sameStatusItem(previous.item, item)) {
+      previous.index = index;
       return;
     }
-    const returnWindowId = this.foregroundWindow()?.windowId ?? null;
-    const opened = this.config.openNotificationsWindow?.();
-    const hostIndex = opened ? this.windows.indexOf(opened.window.window) : -1;
+    const returnWindowId = previous ? previous.returnWindowId : (this.foregroundWindow()?.windowId ?? null);
+    const opened = this.openStatusItemWindow(item);
+    const hostIndex = opened ? this.windows.indexOf(opened.window) : -1;
     if (!opened || hostIndex < 0) return;
     const host = opened.window;
-    const layer = this.notificationDetailLayer(key);
-    host.stack.push(layer);
-    this.selectedNotification = { key, index, host, layer, transient: opened.opened, returnWindowId };
+    const sameHost = previous?.host === host;
+    if (sameHost && previous.detail) previous.detail.stack.popThrough(previous.detail.layer);
+    const detail = item.kind === "notification" && opened.stack
+      ? { stack: opened.stack, layer: this.notificationDetailLayer(item.key) } : null;
+    if (detail) detail.stack.push(detail.layer);
+    this.selectedStatus = {
+      item, index, host, detail, returnWindowId,
+      transient: sameHost ? previous.transient : opened.opened,
+    };
     if (hostIndex === this.selectedIndex) {
       host.requestRender();
     } else {
       this.setSelectedIndex(hostIndex);
     }
+    if (previous && !sameHost) this.releaseStatusWindow(previous, false);
   }
 
   /**
-   * Take the switcher's selection off its notification: the Notifications
-   * window drops the detail view (and anything opened over it), and closes
-   * if it was opened for the selection, unless `keepWindow` (it is the
-   * window being selected instead).
+   * The window a status bar item shows in, opened in the background unless
+   * it is open already (`opened` says this call opened it), and for a
+   * notification, the stack its detail view goes on.
    */
-  private endNotificationSelection(keepWindow = false): void {
-    const selected = this.selectedNotification;
-    if (!selected) return;
-    this.selectedNotification = null;
-    selected.host.stack.popThrough(selected.layer);
-    if (selected.transient && !keepWindow) {
-      this.closeWindow(selected.host.window.windowId);
-      return;
-    }
-    selected.host.requestRender();
-    // A window opened for the selection is now one with an icon of its own.
-    if (selected.transient) this.config.onWindowsChanged?.();
+  private openStatusItemWindow(item: StatusItem): { window: ShellWindow; opened: boolean; stack?: LayerStack } | null {
+    if (item.kind === "widget") return this.trayIcons.get(item.key)?.widget?.openWindow() ?? null;
+    const opened = this.config.openNotificationsWindow?.();
+    return opened ? { window: opened.window.window, opened: opened.opened, stack: opened.window.stack } : null;
   }
 
-  /** End a notification selection by going back to the window selected before it. */
-  private returnFromNotification(): void {
-    const selected = this.selectedNotification;
+  /**
+   * Take the switcher's selection off its status bar item, leaving its
+   * window as releaseStatusWindow does.
+   */
+  private endStatusSelection(keepWindow = false): void {
+    const selected = this.selectedStatus;
+    if (!selected) return;
+    this.selectedStatus = null;
+    this.releaseStatusWindow(selected, keepWindow);
+  }
+
+  /**
+   * A status bar item's window, once the selection has left the item: it
+   * drops a notification's detail view (and anything opened over it), and
+   * closes if it was opened for the selection, unless `keepWindow` (it is
+   * the window being selected instead).
+   */
+  private releaseStatusWindow(selection: StatusSelection, keepWindow: boolean): void {
+    if (selection.detail) selection.detail.stack.popThrough(selection.detail.layer);
+    if (selection.transient && !keepWindow) {
+      this.closeWindow(selection.host.windowId);
+      return;
+    }
+    selection.host.requestRender();
+    // A window opened for the selection is now one with an icon of its own.
+    if (selection.transient) this.config.onWindowsChanged?.();
+  }
+
+  /** End a status bar item selection by going back to the window selected before it. */
+  private returnFromStatusItem(): void {
+    const selected = this.selectedStatus;
     if (!selected) return;
     const back = this.windows.find((window) => window.windowId === selected.returnWindowId);
     if (back) this.setSelectedIndex(this.windows.indexOf(back));
-    this.endNotificationSelection(back === selected.host.window);
+    this.endStatusSelection(back === selected.host);
   }
 
   private notificationDetailLayer(key: string): SingleNotificationLayer {
@@ -1287,25 +1348,25 @@ class Shell {
    * A selected notification's detail view asked to close. Back (or a
    * double-tap) hands focus back to the switcher, its selection still on
    * the notification. Once the notification is gone (dismissed, or removed
-   * by an action), the selection also moves on to the one that took its
-   * place, or back to the windows when there are none left; that waits for
-   * the current paint to finish, since a vanished notification closes its
-   * view from inside its paint.
+   * by an action), the selection also moves on to the status bar item that
+   * took its place, or back to the windows when there are none left; that
+   * waits for the current paint to finish, since a vanished notification
+   * closes its view from inside its paint.
    */
   private notificationDetailClosed(layer: SingleNotificationLayer, gone: boolean): void {
     if (!gone) {
-      if (this.selectedNotification?.layer === layer) this.yieldFocusToSidebar();
+      if (this.selectedStatus?.detail?.layer === layer) this.yieldFocusToSidebar();
       return;
     }
     setTimeout(() => {
-      const selected = this.selectedNotification;
-      if (selected?.layer !== layer) return;
+      const selected = this.selectedStatus;
+      if (selected?.detail?.layer !== layer) return;
       this.focus = "sidebar";
-      const keys = this.selectableNotificationKeys().filter((key) => key !== selected.key);
+      const items = this.selectableStatusItems().filter((item) => !sameStatusItem(item, selected.item));
       const windows = this.switcherWindows();
-      if (keys.length) {
-        const index = Math.min(selected.index, keys.length - 1);
-        this.selectNotification(keys[index]!, index);
+      if (items.length) {
+        const index = Math.min(selected.index, items.length - 1);
+        this.selectStatusItem(items[index]!, index);
       } else if (windows.length) {
         this.selectSwitcherWindow(windows[windows.length - 1]!);
       }
@@ -1849,15 +1910,15 @@ class Shell {
         attention: Boolean(this.attention.get(window.windowId)),
         drawIcon: window.drawIcon,
       })),
-      selectedIndex: this.selectedNotification ? -1 : this.selectedIndex,
-      selectedNotificationKey: this.selectedNotification?.key ?? null,
+      selectedIndex: this.selectedStatus ? -1 : this.selectedIndex,
+      selectedStatusItem: this.selectedStatus?.item ?? null,
       focus: this.focus,
       foregroundHeightMode: this.foregroundWindow()?.heightMode ?? "min",
       foregroundAppId: this.foregroundWindow()?.appId,
       battery: this.battery,
       trayIcons: Array.from(this.trayIcons.keys())
         .sort()
-        .map((key) => this.trayIcons.get(key)!),
+        .map((ownerId) => ({ ownerId, icon: this.trayIcons.get(ownerId)!.icon })),
     };
   }
 }

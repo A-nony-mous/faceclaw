@@ -432,7 +432,8 @@ function statusBarPlacement(state: ShellChromeState): StatusBarPlacement | null 
 
 const NOTIFICATION_ICON_SIZE = 24;
 const NOTIFICATION_ICON_STEP = NOTIFICATION_ICON_SIZE + 4;
-// Notification icons' top, in the top bar's layout.
+// Notification icons' top, in the top bar's layout (where any status icon's
+// selection box starts, a row above).
 const NOTIFICATION_ICON_TOP = ((TOP_BAR_HEIGHT - NOTIFICATION_ICON_SIZE) / 2) | 0;
 // The box round a selected notification icon: clear of it by 2px either
 // side, and by 1px above and below, all a top bar leaves above its divider.
@@ -448,15 +449,31 @@ export type ShellChromeWindow = {
   drawIcon: (image: GrayImage, x: number, y: number, size: number, inverted?: boolean) => void;
 };
 
+/**
+ * A status bar item the app switcher's selection can move onto (see
+ * Shell.moveSelection): a notification's icon, by notification key, or an
+ * app widget (a tray icon), by its owner's id.
+ */
+export type StatusItem = { kind: "notification" | "widget"; key: string };
+
+/** Whether two status bar items are the same one. */
+export function sameStatusItem(a: StatusItem | null | undefined, b: StatusItem | null | undefined): boolean {
+  return !!a && !!b && a.kind === b.kind && a.key === b.key;
+}
+
+/** An app's tray icon, by its owner's id (see Shell.setTrayIcon). */
+export type ShellChromeTrayIcon = { ownerId: string; icon: GrayImage };
+
 export type ShellChromeState = {
   windows: ShellChromeWindow[];
-  /** The selected window's index, or -1 while the selection is on a notification. */
+  /** The selected window's index, or -1 while the selection is on a status bar item. */
   selectedIndex: number;
   /**
-   * The notification (by key) whose icon the switcher's selection is on
-   * instead of a window, if any (see Shell.moveSelection).
+   * The status bar item (a notification's icon or an app widget) the
+   * switcher's selection is on instead of a window, if any (see
+   * Shell.moveSelection).
    */
-  selectedNotificationKey?: string | null;
+  selectedStatusItem?: StatusItem | null;
   focus: "sidebar" | "window";
   /** Height mode of the foreground window; decides where its top bar sits. */
   foregroundHeightMode: WindowHeightMode;
@@ -471,7 +488,7 @@ export type ShellChromeState = {
     watchCharging: boolean | null;
   };
   /** App-provided tray images, drawn between notification icons and batteries. */
-  trayIcons: GrayImage[];
+  trayIcons: ShellChromeTrayIcon[];
 };
 
 /** Placeholder window icon: rounded outline with a single letter. */
@@ -493,15 +510,17 @@ export function makeLetterWindowIcon(letter: string): ShellChromeWindow["drawIco
  * (1) rather than 0, since 0 is the surface's transparent color key. Memoized
  * per source object so the variant is a stable image the texture cache can
  * key on (mode-13's inverse LUT can't reproduce this mapping exactly, so it
- * is simply a separate cached image).
+ * is simply a separate cached image). Deferred draws (an app widget's text)
+ * are baked in first, to be inverted with the rest.
  */
 const invertedIconCache = new WeakMap<GrayImage, GrayImage>();
 function invertedIcon(icon: GrayImage): GrayImage {
   let inverted = invertedIconCache.get(icon);
   if (!inverted) {
+    const flat = icon.withDrawsBaked();
     inverted = new GrayImage(icon.width, icon.height, 0);
-    for (let i = 0; i < icon.pixels.length; i++) {
-      const coverage = icon.pixels[i]!;
+    for (let i = 0; i < flat.pixels.length; i++) {
+      const coverage = flat.pixels[i]!;
       if (coverage > 0) {
         inverted.pixels[i] = Math.max(SHELL_OPAQUE_BLACK, 255 - coverage);
       }
@@ -559,9 +578,9 @@ export class ShellChromeLayer implements Layer {
   // Whether the last paint's selection tab carries the window frame's left
   // side down, so the frame's bottom-left corner is square.
   private frameCornerSquare = false;
-  // The notification icons the last paint drew, left to right: what the
-  // switcher's selection can move onto, and mirror touches hit.
-  private notificationEntries: NotificationEntry[] = [];
+  // The status bar icons (notifications' and app widgets') the last paint
+  // drew: what the switcher's selection can move onto, and mirror touches hit.
+  private statusEntries: StatusEntry[] = [];
 
   /**
    * `onBottomBarHeightChanged` is called, during a paint, when the bottom
@@ -576,7 +595,7 @@ export class ShellChromeLayer implements Layer {
   paint(): GrayImage {
     const image = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
     const state = this.getState();
-    this.notificationEntries = [];
+    this.statusEntries = [];
     this.bottomBar = this.layoutBottomBar(state);
     const statusInRow = statusInSwitcherRow(state.foregroundAppId);
     const popup = switcherPosition() === "popup";
@@ -598,7 +617,7 @@ export class ShellChromeLayer implements Layer {
 
   paintParts(): Plane[] {
     const state = this.getState(), parts: Plane[] = [];
-    this.notificationEntries = [];
+    this.statusEntries = [];
     this.bottomBar = this.layoutBottomBar(state);
     const statusInRow = statusInSwitcherRow(state.foregroundAppId);
     const canvas = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
@@ -693,15 +712,19 @@ export class ShellChromeLayer implements Layer {
     return null;
   }
 
-  /** Keys of the notifications whose icons the last paint drew, left to right. */
-  notificationKeys(): string[] {
-    return this.notificationEntries.map((entry) => entry.key);
+  /**
+   * The status bar items whose icons the last paint drew, in reading order:
+   * left to right, then a second row's. Notifications come before app
+   * widgets wherever the status bar is.
+   */
+  statusItems(): StatusItem[] {
+    return [...this.statusEntries].sort((a, b) => a.y - b.y || a.x - b.x).map(({ kind, key }) => ({ kind, key }));
   }
 
-  /** Which notification's icon is under (x, y) on screen, if any (mirror touches). */
-  notificationKeyAt(x: number, y: number): string | null {
-    const entry = this.notificationEntries.find((e) => x >= e.x && x < e.x + e.width && y >= e.y && y < e.y + e.height);
-    return entry?.key ?? null;
+  /** Which status bar item's icon is under (x, y) on screen, if any (mirror touches). */
+  statusItemAt(x: number, y: number): StatusItem | null {
+    const entry = this.statusEntries.find((e) => x >= e.x && x < e.x + e.width && y >= e.y && y < e.y + e.height);
+    return entry ? { kind: entry.kind, key: entry.key } : null;
   }
 
   /**
@@ -830,10 +853,10 @@ export class ShellChromeLayer implements Layer {
     }
     icons.forEach((icon, index) => items.push({
       kind: "notification", width: NOTIFICATION_ICON_SIZE,
-      draw: (image, x, top) => this.drawNotificationIcon(image, state, icon, keys[index], x, top + NOTIFICATION_ICON_TOP),
+      draw: (image, x, top) => this.drawStatusIcon(image, state, notificationItem(keys[index]), icon, x, top),
     }));
-    for (const icon of state.trayIcons) {
-      items.push({ kind: "tray", width: icon.width, draw: (image, x, top) => drawTrayIcon(image, icon, x, top) });
+    for (const tray of state.trayIcons) {
+      items.push({ kind: "tray", width: tray.icon.width, draw: (image, x, top) => this.drawTrayIcon(image, state, tray, x, top) });
     }
     const batteries = batteryItems(state);
     if (batteries.length) {
@@ -945,7 +968,7 @@ export class ShellChromeLayer implements Layer {
     image.drawText(font, clockX, textY, clock, 210);
 
     const batteryLeft = drawBatteryBlock(image, batteryItems(state), barTop, barRight);
-    const trayLeft = drawTrayIcons(image, state.trayIcons, batteryLeft, barTop);
+    const trayLeft = this.drawTrayIcons(image, state, batteryLeft, barTop);
 
     const iconsX = clockX + Math.ceil(font.measureText(clock)) + 16;
     const maxIcons = Math.max(0, ((trayLeft - NOTIFICATIONS_GAP - iconsX) / NOTIFICATION_ICON_STEP) | 0);
@@ -955,25 +978,47 @@ export class ShellChromeLayer implements Layer {
         noteStaleDataUsed();
       }
       for (let index = 0; index < icons.length; index++) {
-        this.drawNotificationIcon(image, state, icons[index]!, keys[index], iconsX + index * NOTIFICATION_ICON_STEP, barTop + NOTIFICATION_ICON_TOP);
+        this.drawStatusIcon(image, state, notificationItem(keys[index]), icons[index]!, iconsX + index * NOTIFICATION_ICON_STEP, barTop);
       }
     }
   }
 
   /**
-   * Draw a notification icon at (x, iconY), noting it as a notification
-   * entry. The one the switcher's selection is on
-   * (state.selectedNotificationKey) sits in a rounded box like a sidebar
-   * overflow icon's: filled, with the icon inverted, while the switcher has
-   * focus, and outlined while its detail view in the foreground window has.
+   * Draw app tray icons right-to-left, ending just left of the battery
+   * block; returns the left edge of the tray region.
    */
-  private drawNotificationIcon(image: GrayImage, state: ShellChromeState, icon: GrayImage, key: string | undefined, x: number, iconY: number): void {
+  private drawTrayIcons(image: GrayImage, state: ShellChromeState, rightEdge: number, barTop: number): number {
+    let x = rightEdge;
+    for (let index = state.trayIcons.length - 1; index >= 0; index--) {
+      const tray = state.trayIcons[index]!;
+      x -= tray.icon.width + TRAY_ICON_GAP;
+      this.drawTrayIcon(image, state, tray, x, barTop);
+    }
+    return x;
+  }
+
+  /** Draw an app tray icon (an app widget's) with its left edge at x, as drawStatusIcon does. */
+  private drawTrayIcon(image: GrayImage, state: ShellChromeState, tray: ShellChromeTrayIcon, x: number, barTop: number): void {
+    this.drawStatusIcon(image, state, { kind: "widget", key: tray.ownerId }, tray.icon, x, barTop);
+  }
+
+  /**
+   * Draw a status bar item's icon with its left edge at x, centred in the
+   * top bar's layout from `barTop`, noting it as a status entry (unless
+   * `item` is null). The one the switcher's selection is on
+   * (state.selectedStatusItem) sits in a rounded box like a sidebar
+   * overflow icon's: filled, with the icon inverted, while the switcher has
+   * focus, and outlined while its window has. The box is a notification
+   * icon's height whatever the icon's, clear of the top bar's divider.
+   */
+  private drawStatusIcon(image: GrayImage, state: ShellChromeState, item: StatusItem | null, icon: GrayImage, x: number, barTop: number): void {
+    const iconY = barTop + Math.max(0, ((TOP_BAR_HEIGHT - icon.height) / 2) | 0);
     const box = {
-      x: x - NOTIFICATION_BOX_MARGIN_X, y: iconY - NOTIFICATION_BOX_MARGIN_Y,
-      width: NOTIFICATION_ICON_SIZE + 2 * NOTIFICATION_BOX_MARGIN_X, height: NOTIFICATION_ICON_SIZE + 2 * NOTIFICATION_BOX_MARGIN_Y,
+      x: x - NOTIFICATION_BOX_MARGIN_X, y: barTop + NOTIFICATION_ICON_TOP - NOTIFICATION_BOX_MARGIN_Y,
+      width: icon.width + 2 * NOTIFICATION_BOX_MARGIN_X, height: NOTIFICATION_ICON_SIZE + 2 * NOTIFICATION_BOX_MARGIN_Y,
     };
-    if (key) this.notificationEntries.push({ key, ...box });
-    const selected = !!key && key === state.selectedNotificationKey;
+    if (item) this.statusEntries.push({ ...item, ...box });
+    const selected = sameStatusItem(item, state.selectedStatusItem);
     const focused = selected && state.focus === "sidebar";
     if (selected) drawSelectionBox(image, box.x, box.y, box.width, box.height, focused);
     image.drawImage(focused ? invertedIcon(icon) : icon, x, iconY);
@@ -1192,25 +1237,6 @@ function drawAmbientCards(image: GrayImage, right: number, parts?: Plane[]): voi
   }
 }
 
-/**
- * Draw app tray icons right-to-left, ending just left of the battery block;
- * returns the left edge of the tray region.
- */
-function drawTrayIcons(image: GrayImage, trayIcons: GrayImage[], rightEdge: number, barTop: number): number {
-  let x = rightEdge;
-  for (let index = trayIcons.length - 1; index >= 0; index--) {
-    const icon = trayIcons[index]!;
-    x -= icon.width + TRAY_ICON_GAP;
-    drawTrayIcon(image, icon, x, barTop);
-  }
-  return x;
-}
-
-/** An app tray icon with its left edge at x, centred in the top bar's layout from `barTop`. */
-function drawTrayIcon(image: GrayImage, icon: GrayImage, x: number, barTop: number): void {
-  image.drawImage(icon, x, barTop + Math.max(0, ((TOP_BAR_HEIGHT - icon.height) / 2) | 0));
-}
-
 /** The sidebar attention marker, cached per fill value (deferred-image source). */
 const attentionDots = new Map<number, GrayImage>();
 function attentionDot(value: number): GrayImage {
@@ -1225,8 +1251,13 @@ function attentionDot(value: number): GrayImage {
 
 type Rect = { x: number; y: number; width: number; height: number };
 
-/** A notification icon as drawn: its notification's key, and its selection box. */
-type NotificationEntry = Rect & { key: string };
+/** A status bar item's icon as drawn: the item, and its selection box. */
+type StatusEntry = Rect & StatusItem;
+
+/** A notification's status item, if its icon came with a key. */
+function notificationItem(key: string | undefined): StatusItem | null {
+  return key ? { kind: "notification", key } : null;
+}
 
 /** Corner radius of the foreground window's frame. */
 const FRAME_RADIUS = 8;

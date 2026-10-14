@@ -4,7 +4,7 @@ import { type IconName } from "../graphics/icons";
 import { type LayerActions } from "../ui/layers";
 import { type InProcessAppOptions, type InProcessWindow } from "../ui/shell/in-process-window";
 import { WorkerAppHost } from "../ui/shell/worker-window";
-import { shell } from "../ui/shell/shell";
+import { shell, type TrayWidget } from "../ui/shell/shell";
 
 /**
  * An app, as seen from outside while it isn't running. Each app directory's
@@ -96,6 +96,17 @@ export type AppContext = {
     surfaceId: string,
     create: (options: InProcessAppOptions) => InProcessWindow,
   ) => Promise<void>;
+  /**
+   * Open a main-thread singleton window in the background (neither
+   * foregrounded nor focused) unless it is open already; `opened` says this
+   * call opened it. For windows the shell brings forward itself, such as an
+   * app widget's (see inProcessTrayWidget). Hosts that leave it out can't.
+   */
+  openInProcessAppInBackground?: (
+    windowId: string,
+    surfaceId: string,
+    create: (options: InProcessAppOptions) => InProcessWindow,
+  ) => { window: InProcessWindow; opened: boolean };
   /** Get this app's shared worker host, spawning the worker on first use. */
   ensureWorkerHost: (createWorker: () => Worker) => WorkerAppHost;
   /** Submit a window surface's painted frame, as planes (windows created outside launchInProcessApp). */
@@ -119,6 +130,27 @@ export type TextEditorHost = {
   closeTextEditor: () => boolean;
   requestRender: () => void;
 };
+
+/**
+ * A tray widget (see Shell.setTrayIcon) whose window is a main-thread
+ * singleton app window, opened in the background while the switcher's
+ * selection is on it; undefined on hosts that can't do that.
+ */
+export function inProcessTrayWidget(
+  ctx: AppContext,
+  windowId: string,
+  surfaceId: string,
+  create: (options: InProcessAppOptions) => InProcessWindow,
+): TrayWidget | undefined {
+  const open = ctx.openInProcessAppInBackground;
+  if (!open) return undefined;
+  return {
+    openWindow: () => {
+      const { window, opened } = open(windowId, surfaceId, create);
+      return { window: window.window, opened };
+    },
+  };
+}
 
 /**
  * Launch-or-focus flow shared by the worker-hosted apps: focus the app's

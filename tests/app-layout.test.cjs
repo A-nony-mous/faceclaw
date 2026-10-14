@@ -395,6 +395,8 @@ function chromeLayer(g, { notifications = 0, phoneBattery = null, windows = 1, t
   const chrome = new context.exports.ShellChromeLayer(() => state, () => heightChanges++);
   return { chrome, state, requested, planBottomBar: context.exports.planBottomBar, heightChanges: () => heightChanges };
 }
+const notification = (key) => ({ kind: 'notification', key });
+const keysOf = (items) => Array.from(items, (item) => item.key);
 
 test('a bottom app switcher frames the foreground window\'s content in a rounded border', () => {
   const g = geometry();
@@ -526,7 +528,7 @@ test('the switcher row lays out windows, free space, notifications, widgets, bat
   g.settings.appSwitcherPositionSetting.value = 'bottom';
   g.settings.statusBarPositionSetting.value = 'bottom';
   const tray = new graphics.GrayImage(30, 20, 180);
-  const { chrome, requested } = chromeLayer(g, { notifications: 2, phoneBattery: 80, trayIcons: [tray] });
+  const { chrome, requested } = chromeLayer(g, { notifications: 2, phoneBattery: 80, trayIcons: [{ ownerId: 'w', icon: tray }] });
   const parts = chrome.paintParts();
   // No top bar: the row, then the status bar on the top bar's surface and depth.
   assert.deepEqual(Array.from(parts, (p) => [p.shellKey, p.depth ?? 0]), [[1, 0], [2, -2]]);
@@ -568,7 +570,7 @@ test('past two rows of windows, they scroll, and notification icons give way to 
   // Notification icons drop from the end until the two status rows leave
   // three window slots a row (32 + 20 + 3 * 40 - 8, and the gap): 28 stay,
   // 15 in the first row (416px) and 13 with the clock in the second (432px).
-  assert.equal(chrome.notificationKeys().length, 28);
+  assert.equal(chrome.statusItems().length, 28);
   assert.deepEqual([status.x, status.y, status.image.height], [608 - 432 - 2, 367, 71]);
   const at = (p, x, y) => p.image.withDrawsBaked().pixels[(y - p.y) * p.image.width + x - p.x];
   assert.deepEqual([at(status, 608 - 416, 366 + 5 + 2), at(status, 608 - 432, 366 + 36 + 5 + 2)], [200, 200]);
@@ -659,7 +661,7 @@ test('the status bar takes a second row of its own before the windows do', () =>
   const at = (p, x, y) => p.image.withDrawsBaked().pixels[(y - p.y) * p.image.width + x - p.x];
   assert.deepEqual([at(status, 608 - 220, 371 + 2), at(status, 608 - 236, 371 + 28 + 2), at(status, 608 - 56, 371 + 28 + 8 + 2)],
     [200, 200, 210]);
-  assert.deepEqual(Array.from(chrome.notificationKeys()), Array.from({ length: 14 }, (_, i) => `n${i}`));
+  assert.deepEqual(keysOf(chrome.statusItems()), Array.from({ length: 14 }, (_, i) => `n${i}`));
   // The windows keep one row, against the window.
   assert.equal(chrome.windowIndexAt(45, 380, 3), 0);
   assert.equal(chrome.windowIndexAt(45, 410, 3), null);
@@ -772,9 +774,9 @@ test('a notification the switcher selects sits in a box, filled with its icon in
   g.settings.appSwitcherPositionSetting.value = 'bottom';
   g.settings.statusBarPositionSetting.value = 'bottom';
   const { chrome, state } = chromeLayer(g, { notifications: 3, windows: 2 });
-  Object.assign(state, { selectedIndex: -1, selectedNotificationKey: 'n1', focus: 'sidebar' });
+  Object.assign(state, { selectedIndex: -1, selectedStatusItem: notification('n1'), focus: 'sidebar' });
   let [row, status] = chrome.paintParts();
-  assert.deepEqual(Array.from(chrome.notificationKeys()), ['n0', 'n1', 'n2']);
+  assert.deepEqual(keysOf(chrome.statusItems()), ['n0', 'n1', 'n2']);
   // Clock only: the icons end 8px before its 8px lead-in, 28px apart, each
   // 7 rows into the row (the top bar's layout, 5 rows down).
   const iconsLeft = 608 - 56 - 8 - 8 - 3 * 28 + 4, iconY = 366 + 7, n1 = iconsLeft + 28;
@@ -787,23 +789,68 @@ test('a notification the switcher selects sits in a box, filled with its icon in
   // No window is selected: the separator runs unbroken over the windows.
   assert.equal(at(row, 50, 366), 40);
   // Mirror touches find the icons by their boxes, which tile the icons' run.
-  assert.deepEqual([chrome.notificationKeyAt(n1 + 5, 380), chrome.notificationKeyAt(n1 - 3, 380),
-    chrome.notificationKeyAt(iconsLeft - 3, 380), chrome.notificationKeyAt(n1 + 5, 400)], ['n1', 'n0', null, null]);
+  const keyAt = (x, y) => chrome.statusItemAt(x, y)?.key ?? null;
+  assert.deepEqual([keyAt(n1 + 5, 380), keyAt(n1 - 3, 380), keyAt(iconsLeft - 3, 380), keyAt(n1 + 5, 400)], ['n1', 'n0', null, null]);
   // With its detail view focused instead, the box is an outline round the plain icon.
   state.focus = 'window';
   [, status] = chrome.paintParts();
   assert.deepEqual([at(status, n1 - 2, iconY + 12), at(status, n1 - 1, iconY + 12), at(status, n1 + 5, iconY + 5)], [150, 1, 200]);
   // The first icon's box fits the status bar's surface.
-  state.selectedNotificationKey = 'n0';
+  state.selectedStatusItem = notification('n0');
   [, status] = chrome.paintParts();
   assert.equal(at(status, iconsLeft - 2, iconY + 12), 150);
   // In the top bar (the status bar's default place) likewise; barTop=78.
   g.settings.statusBarPositionSetting.value = 'top';
   const [bar] = chrome.paintParts();
   const barIconsLeft = 32 + 10 + 56 + 16;
-  assert.deepEqual(Array.from(chrome.notificationKeys()), ['n0', 'n1', 'n2']);
+  assert.deepEqual(keysOf(chrome.statusItems()), ['n0', 'n1', 'n2']);
   assert.deepEqual([at(bar, barIconsLeft - 2, 78 + 14), at(bar, barIconsLeft + 5, 78 + 7)], [150, 200]);
-  assert.equal(chrome.notificationKeyAt(barIconsLeft + 30, 78 + 10), 'n1');
+  assert.equal(keyAt(barIconsLeft + 30, 78 + 10), 'n1');
+});
+
+test('an app widget the switcher selects sits in a box as a notification does, after the notifications', () => {
+  const g = geometry();
+  g.settings.appSwitcherPositionSetting.value = 'bottom';
+  g.settings.statusBarPositionSetting.value = 'bottom';
+  // A 30x20 widget, its text a deferred draw, and a 12x16 one.
+  const wide = new graphics.GrayImage(30, 20, 0);
+  wide.fillRect(0, 0, 30, 20, 180);
+  wide.drawImage(new graphics.GrayImage(4, 4, 220), 10, 8);
+  const small = new graphics.GrayImage(12, 16, 160);
+  const { chrome, state } = chromeLayer(g, { notifications: 2, windows: 2,
+    trayIcons: [{ ownerId: 'nightscout', icon: wide }, { ownerId: 'timer', icon: small }] });
+  Object.assign(state, { selectedIndex: -1, selectedStatusItem: { kind: 'widget', key: 'nightscout' }, focus: 'sidebar' });
+  let [, status] = chrome.paintParts();
+  // Notifications first, then the widgets, as they sit left to right.
+  assert.deepEqual(Array.from(chrome.statusItems(), (item) => `${item.kind}:${item.key}`),
+    ['notification:n0', 'notification:n1', 'widget:nightscout', 'widget:timer']);
+  // Right to left from the row's end: the clock (56px), its 16px lead-in,
+  // the small widget, 10px, the wide one. Each centred in the top bar's
+  // layout, 5 rows into the row.
+  const smallLeft = 608 - 56 - 16 - 12, wideLeft = smallLeft - 10 - 30, wideTop = 366 + 5 + 4;
+  const at = (p, x, y) => p.image.withDrawsBaked().pixels[(y - p.y) * p.image.width + x - p.x];
+  // The box: 2px either side, as tall as a notification's (rows 1..26 of
+  // the layout) whatever the widget's height; white, with the widget
+  // inverted inside it, its deferred draw too.
+  assert.deepEqual([at(status, wideLeft - 2, 366 + 5 + 14), at(status, wideLeft + 31, 366 + 5 + 14),
+    at(status, wideLeft + 15, 366 + 5 + 1), at(status, wideLeft + 15, 366 + 5 + 26)], [255, 255, 255, 255]);
+  assert.equal(at(status, wideLeft + 15, 366 + 5 + 27), 1);
+  assert.deepEqual([at(status, wideLeft + 2, wideTop + 2), at(status, wideLeft + 11, wideTop + 9)], [75, 35]);
+  assert.equal(at(status, smallLeft + 2, 366 + 5 + 8), 160);
+  // Mirror touches find widgets by their boxes too.
+  assert.deepEqual({ ...chrome.statusItemAt(wideLeft - 1, 380) }, { kind: 'widget', key: 'nightscout' });
+  assert.deepEqual({ ...chrome.statusItemAt(smallLeft + 13, 380) }, { kind: 'widget', key: 'timer' });
+  // With its window focused instead, an outline round the plain widget.
+  state.focus = 'window';
+  [, status] = chrome.paintParts();
+  assert.deepEqual([at(status, wideLeft - 2, 366 + 5 + 14), at(status, wideLeft + 2, wideTop + 2)], [150, 180]);
+  // In the top bar likewise, the notifications still before the widgets
+  // though drawn after them; barTop=78.
+  g.settings.statusBarPositionSetting.value = 'top';
+  const [bar] = chrome.paintParts();
+  assert.deepEqual(Array.from(chrome.statusItems(), (item) => item.key), ['n0', 'n1', 'nightscout', 'timer']);
+  const barWideLeft = 608 - 10 - 12 - 10 - 30;
+  assert.deepEqual([at(bar, barWideLeft - 2, 78 + 14), at(bar, barWideLeft + 2, 78 + 6)], [150, 180]);
 });
 
 test('with the selection out on a notification, the windows stay scrolled as they were', () => {
@@ -815,7 +862,7 @@ test('with the selection out on a notification, the windows stay scrolled as the
   const last = 32 + 10 + 2 * 40 + 4;
   const before = chrome.windowIndexAt(last, 380, 40);
   assert.ok(before > 2);
-  Object.assign(state, { selectedIndex: -1, selectedNotificationKey: 'n0' });
+  Object.assign(state, { selectedIndex: -1, selectedStatusItem: notification('n0') });
   chrome.paintParts();
   assert.equal(chrome.windowIndexAt(last, 380, 40), before);
 });
