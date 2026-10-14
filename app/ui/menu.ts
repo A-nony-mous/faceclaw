@@ -383,6 +383,8 @@ export function openModalMenu(
     width: menuWidth,
     minHeight: menuHeight,
     maxHeight: menuHeight,
+    // Floats nearer than the content it opens over, like the window and system menus.
+    depth: 4,
   };
   ctx.stack.push(new MenuLayer(title, items, layout).selectItem(initialSelectedIndex));
 }
