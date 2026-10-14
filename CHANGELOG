@@ -10,6 +10,8 @@
 * Glanceboard compass shows calibration-accuracy indicator
 * Status-bar widgets (nightscout, weather, timer) are selectable
 * Roam app: Add a date-picker for navigating to a daily page
+* Clear notification popups when they're dismissed on the phone, and avoid showing some notifications that are spurious
+* Add depth effects to some modals that didn't have them
 
 ### Bug fixes
 

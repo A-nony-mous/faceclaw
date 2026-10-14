@@ -10,7 +10,7 @@ const ICON_SIZE = 24;
 /** Ask the native listener for every active source, including those below the list's display limit. */
 export const ALL_NOTIFICATIONS = 0x7fffffff;
 // Backstop TTL only: the icon caches are invalidated eagerly whenever a
-// notification is posted or dismissed (see invalidateIconCaches callers), so
+// notification is posted or removed (see invalidateIconCaches callers), so
 // the tray is kept fresh by invalidation, not by expiry. A short TTL just
 // forced a blocking main-thread re-fetch (~40-100ms of Java icon
 // rasterization) every few seconds — usually producing a no-change frame that
@@ -24,6 +24,7 @@ const keyedIconCache = new Map<string, { icon: GrayImage | null; atMs: number }>
 const KEYED_ICON_CACHE_MAX = 128;
 let notificationListenerProxy: any = null;
 const notificationPostedListeners = new Set<(notificationKey: string) => void>();
+const notificationRemovedListeners = new Set<(notificationKey: string) => void>();
 
 function invalidateIconCaches(): void {
   cachedAtMs = 0;
@@ -190,12 +191,38 @@ export function dismissNotification(notificationKey: string): boolean {
 }
 
 export function onAndroidNotificationPosted(listener: (notificationKey: string) => void): () => void {
-  notificationPostedListeners.add(listener);
-  ensureNotificationPostedListener();
+  return addNotificationListener(notificationPostedListeners, listener);
+}
+
+/**
+ * A listed notification went away: cancelled by its source (including one
+ * withdrawn moments after it was posted), dismissed on the phone or from the
+ * glasses, or updated into one the glasses don't list.
+ */
+export function onAndroidNotificationRemoved(listener: (notificationKey: string) => void): () => void {
+  return addNotificationListener(notificationRemovedListeners, listener);
+}
+
+/** Any change to the listed notifications (a post or a removal), for views that just repaint. */
+export function onAndroidNotificationsChanged(listener: () => void): () => void {
+  const offPosted = onAndroidNotificationPosted(listener);
+  const offRemoved = onAndroidNotificationRemoved(listener);
   return () => {
-    notificationPostedListeners.delete(listener);
-    if (notificationPostedListeners.size === 0) {
-      removeNotificationPostedListener();
+    offPosted();
+    offRemoved();
+  };
+}
+
+function addNotificationListener(
+  listeners: Set<(notificationKey: string) => void>,
+  listener: (notificationKey: string) => void,
+): () => void {
+  listeners.add(listener);
+  ensureNativeNotificationListener();
+  return () => {
+    listeners.delete(listener);
+    if (notificationPostedListeners.size === 0 && notificationRemovedListeners.size === 0) {
+      removeNativeNotificationListener();
     }
   };
 }
@@ -222,21 +249,18 @@ function normalizeNotification(value: any): AndroidNotification | null {
     postTime: Number(value.postTime) || 0,
     when: Number(value.when) || 0,
     actions,
+    foregroundService: Boolean(value.foregroundService),
   };
 }
 
-function ensureNotificationPostedListener(): void {
+function ensureNativeNotificationListener(): void {
   if (!global.isAndroid || notificationListenerProxy) return;
   notificationListenerProxy = new com.faceclaw.app.FaceclawNotificationListener({
     onNotificationPosted: (notificationKey: string) => {
-      invalidateIconCaches();
-      const key = String(notificationKey);
-      const listeners = Array.from(notificationPostedListeners);
-      setTimeout(() => {
-        for (const listener of listeners) {
-          listener(key);
-        }
-      }, 0);
+      dispatchNotificationEvent(notificationPostedListeners, notificationKey);
+    },
+    onNotificationRemoved: (notificationKey: string) => {
+      dispatchNotificationEvent(notificationRemovedListeners, notificationKey);
     },
   });
   com.faceclaw.app.FaceclawMediaNotificationListenerService.addNotificationListener(
@@ -244,7 +268,18 @@ function ensureNotificationPostedListener(): void {
   );
 }
 
-function removeNotificationPostedListener(): void {
+function dispatchNotificationEvent(listeners: Set<(notificationKey: string) => void>, notificationKey: string): void {
+  invalidateIconCaches();
+  const key = String(notificationKey);
+  const snapshot = Array.from(listeners);
+  setTimeout(() => {
+    for (const listener of snapshot) {
+      listener(key);
+    }
+  }, 0);
+}
+
+function removeNativeNotificationListener(): void {
   if (!global.isAndroid || !notificationListenerProxy) return;
   com.faceclaw.app.FaceclawMediaNotificationListenerService.removeNotificationListener(
     notificationListenerProxy,
