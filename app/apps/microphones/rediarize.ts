@@ -140,6 +140,8 @@ function applyTurns(sessionId: number, turns: Turn[]): RediarizeResult {
     } else {
       const id = Number(store().createSpeaker(nextAutoName(), "#90A4AE", false, encodeEmbedding(centroid)));
       speakerRegistry.reload();
+      // A failed insert returns -1; leave that cluster's segments as they were.
+      if (id < 0) continue;
       clusterSpeaker.set(cluster, id);
       newSpeakers += 1;
     }

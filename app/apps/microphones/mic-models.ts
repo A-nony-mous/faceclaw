@@ -142,6 +142,7 @@ function notifyStateChanged(id: MicModelId): void {
 
 export function startMicModelDownload(id: MicModelId): void {
   if (!global.isAndroid || downloaders.has(id) || isMicModelReady(id)) return;
+  progress.delete(id);
   downloadNextFile(id);
   notifyStateChanged(id);
 }
@@ -171,15 +172,22 @@ function downloadNextFile(id: MicModelId): void {
       notifyStateChanged(id);
     },
   });
-  const downloader = new com.faceclaw.app.FaceclawModelDownloader(
-    `${definition.baseUrl}${nextFile.remoteName}`,
-    filePath(id, nextFile),
-    nextFile.sha256,
-    nextFile.sizeBytes,
-    listener,
-  );
-  downloaders.set(id, downloader);
-  downloader.start();
+  try {
+    const downloader = new com.faceclaw.app.FaceclawModelDownloader(
+      `${definition.baseUrl}${nextFile.remoteName}`,
+      filePath(id, nextFile),
+      nextFile.sha256,
+      nextFile.sizeBytes,
+      listener,
+    );
+    downloaders.set(id, downloader);
+    downloader.start();
+  } catch (error) {
+    // Without this, a dead entry would pin the model at "downloading".
+    console.error(`Mic model download failed to start (${id}/${nextFile.name}): ${String(error)}`);
+    downloaders.delete(id);
+    notifyStateChanged(id);
+  }
 }
 
 export function cancelMicModelDownload(id: MicModelId): void {

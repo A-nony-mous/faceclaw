@@ -15,12 +15,15 @@ export class CaptionsLayer implements Layer {
   private state: MicSessionState = micSession.getState();
   private unsubscribe: (() => void) | null = null;
   private scrollback = 0;
-  private lastLineCount = 0;
+  private lastLine: CaptionLine | null = null;
 
   start(requestRender: () => void): void {
     this.unsubscribe = micSession.onState((state) => {
-      if (state.captionLines.length !== this.lastLineCount) {
-        this.lastLineCount = state.captionLines.length;
+      // Watch the newest line itself: once the session's line cap is reached
+      // the count stops changing even though new speech keeps arriving.
+      const last = state.captionLines[state.captionLines.length - 1] ?? null;
+      if (last !== this.lastLine) {
+        this.lastLine = last;
         this.scrollback = 0;
       }
       this.state = state;

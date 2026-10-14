@@ -110,6 +110,7 @@ class MicArrayController {
    * doesn't spend BLE bandwidth.
    */
   apply(config: MicConfig): boolean {
+    if (config.armHardware && !micControlSupported()) return false;
     const leftActive = templeActive(config, "left");
     const rightActive = templeActive(config, "right");
     if (leftActive || rightActive) {
@@ -148,8 +149,8 @@ class MicArrayController {
   ): boolean {
     const communicator = activeCommunicator();
     if (!communicator) return false;
-    this.ensureStatusProxy(communicator);
     try {
+      this.ensureStatusProxy(communicator);
       const record = encodeMicControl(op, config);
       communicator.sendFaceclawMicControl(toJavaBytes(record), label, rightTemple, leftTemple);
       return true;
