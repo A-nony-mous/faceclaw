@@ -93,7 +93,7 @@ import { createNotificationsAppWindow, NOTIFICATIONS_SURFACE_ID, NOTIFICATIONS_W
 import { isInstalledPackagePresent } from "../apps/evenhub/updates";
 import { wearerVerificationOptions } from "../apps/microphones/speakers";
 import { micSession } from "../apps/microphones/mic-session";
-import { glassesDisplayLabel } from "./glasses-display-state";
+import { glassesDisplayAsleep, glassesDisplayLabel, type GlassesDisplayState } from "./glasses-display-state";
 import { PreviewDisplayTarget, type DisplayTarget } from "../native/preview-display";
 
 type ConnectionPhase = "disconnected" | "connecting" | "connected" | "charging" | "disconnecting";
@@ -1171,14 +1171,23 @@ class DashboardController {
 
   /** What occupies the foreground-title line on the watch-style controls. */
   glassesDisplayLabel(): string {
-    return glassesDisplayLabel({
+    return glassesDisplayLabel(this.glassesDisplayState());
+  }
+
+  /** Whether that line reads "Display off" (the watch face adds a wake hint under it). */
+  glassesDisplayAsleep(): boolean {
+    return glassesDisplayAsleep(this.glassesDisplayState());
+  }
+
+  private glassesDisplayState(): GlassesDisplayState {
+    return {
       phase: this.phase,
       silentMode: this.silentMode,
       screenOn: shell.isScreenOn(),
       battery: this.lastHeadsetBattery,
       foregroundTitle: shell.getForegroundApp()?.title ?? null,
       previewMode: this.isPreviewDisplayActive(),
-    });
+    };
   }
 
   /**
