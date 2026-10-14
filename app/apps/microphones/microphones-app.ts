@@ -453,8 +453,9 @@ export function createMicrophonesAppWindow(options: InProcessAppOptions): InProc
       }),
       configToggleItem(
         "Captions",
-        () => captionsEnabledSetting.get(),
-        () => micSession.setCaptionsEnabled(!captionsEnabledSetting.get()),
+        // Shows off after repeated engine failures, so turning it on retries.
+        () => micSession.captionsEnabled(),
+        () => micSession.setCaptionsEnabled(!micSession.captionsEnabled()),
         undefined,
         captionsEnabledSetting.description,
       ),

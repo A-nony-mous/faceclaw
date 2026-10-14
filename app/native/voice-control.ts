@@ -122,13 +122,17 @@ export class FaceclawVoiceControlBridge {
   private captureEndpointing = false;
   // Non-null while a cloud provider owns the transcript; Java only decodes PCM.
   private cloudClient: CloudSttClient | null = null;
-  // Raw-PCM tap (EvenHub mic apps): when active, the controller runs in the
-  // decode-only "cloud" mode and every decoded PCM frame is broadcast to these
-  // listeners. STT capture preempts it — a live assistant/transcribe session
-  // owns the single G2 mic and the raw tap is stopped for its duration.
+  // Raw-PCM tap (EvenHub mic apps, the Microphones app): when active, the
+  // controller runs in the decode-only "cloud" mode and every decoded PCM
+  // frame is broadcast to these listeners. STT capture preempts it — a live
+  // assistant/transcribe session owns the single G2 mic and the raw tap is
+  // stopped for its duration.
   private readonly rawPcmListeners = new Set<RawPcmListener>();
   private readonly frameMetaListeners = new Set<FrameMetaListener>();
   private rawActive = false;
+  // Who wants the raw tap. It runs while any owner does, so one owner letting
+  // go (an EvenHub app backgrounding) doesn't silence another.
+  private readonly rawOwners = new Set<string>();
   // Set when the current capture session runs "my voice only" verification;
   // a non-wearer verdict arrives just before the final transcript and makes
   // the bridge swallow it.
@@ -220,11 +224,33 @@ export class FaceclawVoiceControlBridge {
   }
 
   /**
-   * Start the decode-only raw-PCM tap for an EvenHub mic app. Fails (returns
-   * false) if an STT capture already owns the mic; the caller re-tries when its
-   * eligibility is re-evaluated. Idempotent while already running.
+   * Start the decode-only raw-PCM tap on behalf of `owner`. Fails (returns
+   * false) if an STT capture already owns the mic; the owner stays registered
+   * and re-tries later (the EvenHub router when eligibility is re-evaluated,
+   * the Microphones app from its capture check). Idempotent while already
+   * running.
    */
-  startRawCapture(options: { communicator: any }): boolean {
+  startRawCapture(options: { communicator: any; owner: string }): boolean {
+    if (!global.isAndroid) return false;
+    this.rawOwners.add(options.owner);
+    return this.startRawTap(options.communicator);
+  }
+
+  /** `owner` no longer wants the raw tap; it stops once no owner does. */
+  stopRawCapture(owner: string): void {
+    this.rawOwners.delete(owner);
+    if (this.rawOwners.size === 0) this.endRawTap();
+  }
+
+  /**
+   * Whether the raw tap is running and its glasses mic enable still holds
+   * (or is still coming up). False after an STT preemption or a session drop.
+   */
+  isRawCaptureLive(): boolean {
+    return this.rawActive && this.micIsLive();
+  }
+
+  private startRawTap(communicator: any): boolean {
     if (!global.isAndroid) return false;
     if (this.rawActive && this.micIsLive()) return true;
     // An STT holder owns the mic even while its stream waits on a new glasses
@@ -234,7 +260,7 @@ export class FaceclawVoiceControlBridge {
     if (this.started || this.rawActive) this.teardownCapture();
     this.suspendedRaw = false;
     this.ensureController();
-    this.controller?.setCommunicator(options.communicator);
+    this.controller?.setCommunicator(communicator);
     // The raw tap is strictly the G2 stream; clear any phone-mic flag a
     // preview-mode capture may have left on the shared controller.
     this.controller?.setUsePhoneMic(false);
@@ -254,7 +280,7 @@ export class FaceclawVoiceControlBridge {
     return true;
   }
 
-  stopRawCapture(): void {
+  private endRawTap(): void {
     this.suspendedRaw = false;
     if (!this.rawActive) return;
     this.rawActive = false;
@@ -266,7 +292,7 @@ export class FaceclawVoiceControlBridge {
     if (!global.isAndroid) return;
     // STT preempts the raw-PCM tap: a live transcription session owns the mic,
     // and an EvenHub app gets no audio for its duration.
-    if (this.rawActive) this.stopRawCapture();
+    if (this.rawActive) this.endRawTap();
     // Whether the mic is already running is a question about the stream, not
     // about this set: a holder whose capture died with the glasses session
     // (or whose mic enable was refused) is still in it. Trusting the set here
@@ -428,8 +454,8 @@ export class FaceclawVoiceControlBridge {
     for (const holder of holders) {
       this.acquireCapture(holder, { ...options, endpointing: this.captureEndpointing });
     }
-    if (resumeRaw && !holders.length) {
-      this.startRawCapture({ communicator: options.communicator });
+    if (resumeRaw && !holders.length && this.rawOwners.size > 0) {
+      this.startRawTap(options.communicator);
     }
   }
 

@@ -39,7 +39,7 @@ export class CaptionsLayer implements Layer {
 
     image.drawText(font, 12, 4, "Captions", 220);
     if (!state.captionsActive) {
-      image.drawText(font, 12, 26, "Captions are off (enable in the Microphones menu).", 130);
+      image.drawText(font, 12, 26, state.captionsNote, 130);
     }
 
     const rows = this.buildRows(font, width - 36, state.captionLines);

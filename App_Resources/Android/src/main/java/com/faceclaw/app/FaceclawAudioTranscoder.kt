@@ -13,7 +13,8 @@ import java.io.IOException
 /**
  * Transcodes a 16-bit PCM WAV conversation recording into AAC-LC in an M4A
  * container, cutting speech recordings to roughly a tenth of their WAV size.
- * Runs on its own thread; the source WAV is deleted on success when requested.
+ * Runs on its own thread; when requested, the source WAV is deleted once the
+ * listener's onDone has returned normally.
  */
 class FaceclawAudioTranscoder(
     private val wavPath: String?,
@@ -66,19 +67,28 @@ class FaceclawAudioTranscoder(
     private fun run() {
         try {
             transcode()
-            val size = File(outputPath).length()
-            if (deleteSourceOnSuccess) {
-                File(wavPath).delete()
-            }
-            if (listener != null) {
-                listener.onDone(outputPath, size)
-            }
         } catch (t: Throwable) {
             Log.w(TAG, "transcode failed for $wavPath", t)
             File(outputPath).delete()
-            if (listener != null) {
-                listener.onError(if (t.message == null) t.toString() else t.message)
+            try {
+                listener?.onError(if (t.message == null) t.toString() else t.message)
+            } catch (listenerError: Throwable) {
+                Log.w(TAG, "transcode error listener failed", listenerError)
             }
+            return
+        }
+        val size = File(outputPath).length()
+        try {
+            listener?.onDone(outputPath, size)
+        } catch (t: Throwable) {
+            // The caller never took up the new file, so whatever it recorded still names the
+            // source: keep that and drop the output, rather than lose both.
+            Log.w(TAG, "transcode listener failed for $wavPath", t)
+            File(outputPath).delete()
+            return
+        }
+        if (deleteSourceOnSuccess) {
+            File(wavPath).delete()
         }
     }
 

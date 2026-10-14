@@ -125,6 +125,17 @@ class MicArrayController {
     return true;
   }
 
+  /**
+   * Re-send CONFIGURE to one temple whose stream went quiet (a lost write, or
+   * a temple that restarted on its own), leaving the other temple's stream
+   * untouched.
+   */
+  reconfigureTemple(config: MicConfig, side: MicSide): boolean {
+    if (!templeActive(config, side)) return false;
+    if (config.armHardware && !micControlSupported()) return false;
+    return this.send("configure", config, `configure-${side}`, side === "right", side === "left");
+  }
+
   query(): boolean {
     return this.send("query", undefined, "query");
   }
@@ -152,8 +163,8 @@ class MicArrayController {
     try {
       this.ensureStatusProxy(communicator);
       const record = encodeMicControl(op, config);
-      communicator.sendFaceclawMicControl(toJavaBytes(record), label, rightTemple, leftTemple);
-      return true;
+      // False when the session wasn't ready and nothing was queued.
+      return communicator.sendFaceclawMicControl(toJavaBytes(record), label, rightTemple, leftTemple) !== false;
     } catch (error) {
       console.warn(`mic control ${label} failed: ${error}`);
       return false;

@@ -52,6 +52,7 @@ import { isPreviewOnlyMode } from "../phone-ui/onboarding-state";
 import { claimGlassesOnboardingAutoLaunch, ONBOARDING_APP_ID } from "../apps/onboarding/onboarding-progress";
 import { beginRenderPass, endRenderPass } from "../util/render-freshness";
 import { voiceControlBridge } from "../native/voice-control";
+import { voiceActivity } from "../ui/shell/voice-activity";
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
 import { flattenPlanesWithDraws, planesFingerprint, type Plane } from "../graphics/plane";
 import { prepareFrameDraws } from "../graphics/glyph-wire";
@@ -163,6 +164,8 @@ const SHELL_REFRESH_INTERVAL_MS = 60_000;
 // schedules a refresh), so this just covers anything that slips through.
 const PREVIEW_INTERVAL_MS = 1_000;
 const SCREEN_TIMEOUT_CHECK_MS = 1_000;
+// voiceActivity holder for Transcribe's continuous capture.
+const CONTINUOUS_CAPTURE_HOLDER = "continuous-capture";
 // The lock screen is a short notice, not something to read at leisure; it
 // ignores the screen-timeout setting (including "never").
 const LOCK_SCREEN_TIMEOUT_MS = 15_000;
@@ -2058,11 +2061,16 @@ class DashboardController {
   }
 
   private startContinuousVoiceCapture(): void {
+    // Continuous capture (Transcribe) owns the glasses mic for as long as it
+    // runs. Claim it before the capture starts so the Microphones app and
+    // EvenHub mic apps stand down first, as they do for the voice dialog.
+    voiceActivity.setActive(true, CONTINUOUS_CAPTURE_HOLDER);
     void this.beginVoiceCapture("continuous");
   }
 
   private stopContinuousVoiceCapture(): void {
     voiceControlBridge.stopContinuousCapture();
+    voiceActivity.setActive(false, CONTINUOUS_CAPTURE_HOLDER);
   }
 
   /**
