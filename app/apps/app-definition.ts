@@ -134,19 +134,24 @@ export type TextEditorHost = {
 /**
  * A tray widget (see Shell.setTrayIcon) whose window is a main-thread
  * singleton app window, opened in the background while the switcher's
- * selection is on it; undefined on hosts that can't do that.
+ * selection is on it; undefined on hosts that can't do that. `show`, if
+ * given, runs each time the selection moves onto the widget, once the
+ * window is open, to bring what the widget stands for on screen in it (the
+ * shell repaints the window after).
  */
 export function inProcessTrayWidget(
   ctx: AppContext,
   windowId: string,
   surfaceId: string,
   create: (options: InProcessAppOptions) => InProcessWindow,
+  show?: () => void,
 ): TrayWidget | undefined {
   const open = ctx.openInProcessAppInBackground;
   if (!open) return undefined;
   return {
     openWindow: () => {
       const { window, opened } = open(windowId, surfaceId, create);
+      show?.();
       return { window: window.window, opened };
     },
   };

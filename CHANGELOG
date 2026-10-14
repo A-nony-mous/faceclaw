@@ -8,7 +8,7 @@
 * T3 Code client: Add options (worktree, host, etc) when creating threads
 * Add configuration options to the glanceboard system card and music player
 * Glanceboard compass shows calibration-accuracy indicator
-* Status-bar widgets (nightscout, weather) are selectable
+* Status-bar widgets (nightscout, weather, timer) are selectable
 
 ### Bug fixes
 
