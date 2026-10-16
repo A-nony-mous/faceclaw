@@ -18,6 +18,7 @@
 * Phone preview is centered on the phone screen when apps are not maximized
 * iOS: Add missing EvenHub icons on the phone home screen
 * Fix a bug where album art and track display could get out of sync if you advance twice quickly
+* Fix a bug where EvenHub searches with spaces in the search term would fail
 
 ## 0.8.3 - 2026-10-10
 
