@@ -236,7 +236,8 @@ function settingsSections(): SettingsSection[] {
   if (!global.isIOS) return sections;
   const deferred = new Set(["Watch"]);
   return sections.map(section => {
-    if (section.label === "Developer") return { ...section, items: [toggleSettingMenuItem(showBleBandwidthSetting)] };
+    if (section.label === "Developer") return { ...section, items: [enumSettingMenuItem(ringConnectionModeSetting),
+      toggleSettingMenuItem(showBleBandwidthSetting)] };
     // No downloadable on-device models: iOS's on-device option is Apple's recognizer.
     if (section.label === "Voice") return { label: "Voice", items: [enumSettingMenuItem(wakeWordActionSetting),
       enumSettingMenuItem(voiceProviderSetting)] };

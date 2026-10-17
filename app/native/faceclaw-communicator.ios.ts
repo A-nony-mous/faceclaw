@@ -524,7 +524,10 @@ export class FaceclawCommunicatorBridge {
         id, Math.round(options.x), Math.round(options.y), Math.round(options.width), Math.round(options.height),
         Math.round(options.zOrder), transparency,
       );
-      if (configured !== false) this.nativeSurfaces.add(id);
+      // Kotlin logged why; reject so callers don't treat the surface as live (as on Android,
+      // where the compositor's exception reaches JS).
+      if (configured === false) throw new Error(`Could not configure surface ${id}`);
+      this.nativeSurfaces.add(id);
     });
   }
 

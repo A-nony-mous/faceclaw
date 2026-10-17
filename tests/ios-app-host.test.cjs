@@ -257,20 +257,29 @@ test('iOS configures an in-process surface before submitting constructor-trigger
 });
 
 test('iOS compositor rejects missing and removed surfaces before crossing into Kotlin', () => {
-  let nativeSubmissions = 0;
-  const native = { configureIdXYWidthHeightZOrderTransparent() {}, removeId() {}, submitDrawsIdDataXYWidthHeightDraws() { nativeSubmissions++; } };
+  let nativeCalls = 0;
+  const native = { configureIdXYWidthHeightZOrderTransparent() {}, removeId() {}, submitDrawsIdDataXYWidthHeightDraws() { nativeCalls++; },
+    visibleIdVisible() { nativeCalls++; }, depthIdDepth() { nativeCalls++; } };
   const api = load('app/graphics/surface-compositor.ios.ts', {
     require: () => ({ toData: data => data }),
     FaceclawKitIosSurfaceCompositor: { alloc: () => ({ initWithWidthHeight: () => native }) },
   });
   const c = new api.SurfaceCompositor(2, 1), pixels = new Uint8Array([1, 2]);
   const rect = { x: 0, y: 0, width: 2, height: 1 };
-  assert.throws(() => c.submitSurfaceFrame('nightscout', pixels, rect), /Unknown surface/);
+  const rejectsAll = () => {
+    assert.throws(() => c.submitSurfaceFrame('nightscout', pixels, rect), /Unknown surface/);
+    assert.throws(() => c.setSurfaceVisible('nightscout', true), /Unknown surface/);
+    assert.throws(() => c.setSurfaceDepth('nightscout', 1), /Unknown surface/);
+  };
+  rejectsAll();
   c.configureSurface('nightscout', { ...rect, zOrder: 0, transparency: 'opaque' });
   c.submitSurfaceFrame('nightscout', pixels, rect);
+  c.setSurfaceVisible('nightscout', true);
+  c.setSurfaceDepth('nightscout', 1);
+  assert.throws(() => c.setSurfaceDepth('nightscout', 200), /Invalid surface depth/);
   c.removeSurface('nightscout');
-  assert.throws(() => c.submitSurfaceFrame('nightscout', pixels, rect), /Unknown surface/);
-  assert.equal(nativeSubmissions, 1);
+  rejectsAll();
+  assert.equal(nativeCalls, 3);
 });
 
 test('iOS opens the on-glasses onboarding on a new acknowledged frame, once per run while due', () => {
