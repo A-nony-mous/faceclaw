@@ -16,6 +16,7 @@ import { IosNavigationSensors } from '../native/ios-navigation-sensors'
 import { bindCompassSession, receiveCompassEvent } from '../native/compass.ios'
 import { Dialogs, File, knownFolders, path, Utils, type ImageSource } from '@nativescript/core'
 import { iosVoiceInput } from '../native/ios-voice-input'
+import { voiceActivity } from '../ui/shell/voice-activity'
 import { nightscoutBridge } from '../native/nightscout-bridge'
 import { weatherBridge } from '../native/weather'
 import { FaceclawCommunicatorBridge, resolveIosPeripherals, type CommunicatorState, type RawInputEvent } from '../native/faceclaw-communicator.ios'
@@ -48,12 +49,15 @@ import { mirrorToPanelFraction, phonePreviewCrop } from './phone-preview-crop'
 import { onAnySettingChanged,
   previewColorSetting, lockScreenEnabledSetting, getBrightnessPreferences, getStringSettingById,
   nightscoutSiteUrlSetting, nightscoutApiTokenSetting, voiceProviderSetting, elevenLabsApiKeySetting,
-  openAiApiKeySetting, sonioxApiKeySetting, ringConnectionModeSetting } from '../ui/dashboard-settings'
+  openAiApiKeySetting, sonioxApiKeySetting, whisperServerApiKeySetting, whisperServerLanguageSetting,
+  whisperServerModelSetting, whisperServerUrlSetting, ringConnectionModeSetting, saveTranscribeAudioSetting } from '../ui/dashboard-settings'
 import type { VoiceProviderSelection } from '../native/cloud-stt-provider'
 import type { PhoneGesture } from '../phone-ui/phone-gestures'
 import { claimGlassesOnboardingAutoLaunch, ONBOARDING_APP_ID } from '../apps/onboarding/onboarding-progress'
 
 const SHELL_SURFACE_ID = 'shell'
+// voiceActivity holder for continuous capture (Transcribe), as on Android.
+const CONTINUOUS_CAPTURE_HOLDER = 'continuous-capture'
 const SHELL_SURFACE_Z_ORDER = 1
 const LOCK_SURFACE_Z_ORDER = 1000
 /** The shell render loop waits this long for the glasses to take a frame before moving on. */
@@ -144,6 +148,7 @@ export class IosPreviewController {
   private acknowledgedFrames = 0
   private logLines: string[] = []
   private logTimer: ReturnType<typeof setTimeout> | null = null
+  private continuousCaptureToken = 0
   private readonly actions: LayerActions = {
     ...noopLayerActions,
     playBuzzerSequence: payload => this.communicator?.playBuzzerSequence(payload),
@@ -151,7 +156,8 @@ export class IosPreviewController {
     disconnect: () => this.disconnect(),
     startVoiceCapture: endpointing => this.startVoiceCapture(endpointing),
     stopVoiceCapture: () => iosVoiceInput.stopPushToTalk(),
-    startContinuousVoiceCapture: () => this.onError("Voice capture is not available on iOS yet."),
+    startContinuousVoiceCapture: options => this.startContinuousVoiceCapture(options?.recordAs),
+    stopContinuousVoiceCapture: () => this.stopContinuousVoiceCapture(),
     startTextSettingEdit: async setting => { await this.editSetting(setting) },
     startTextSettingsEdit: async (settings, title, finished, toggle, cancelled) => {
       for (const setting of settings) if (!await this.editSetting(setting)) { cancelled?.(); return }
@@ -941,10 +947,40 @@ export class IosPreviewController {
       await iosVoiceInput.startPhoneCapture(voice, log, endpointing)
     }
   }
+  /** Open-ended capture (Transcribe, Teleprompter); holds voiceActivity like Android. */
+  private async startContinuousVoiceCapture(recordAs?: string): Promise<void> {
+    if (this.glassesLocked) return
+    const voice = this.voiceProvider()
+    if (!iosVoiceInput.supportsContinuous(voice)) {
+      this.onError('Transcribe on iOS needs a cloud or Whisper server transcription provider (Settings > Voice > Transcription Provider).')
+      return
+    }
+    // A stop during an await below bumps the token; this start then backs off.
+    const token = ++this.continuousCaptureToken
+    const current = () => token === this.continuousCaptureToken
+    const log = (message: string) => this.logBluetooth(message)
+    const record = recordAs && saveTranscribeAudioSetting.get() ? recordAs : ''
+    voiceActivity.setActive(true, CONTINUOUS_CAPTURE_HOLDER)
+    const communicator = this.communicator
+    if (communicator && this.state.phase === 'connected') {
+      await iosVoiceInput.startGlassesCapture(communicator, voice, log, false, true, record)
+    } else if (this.active && await iosVoiceInput.prepare(this.active, true, voice) && current() && this.active && !this.glassesLocked) {
+      await iosVoiceInput.startPhoneCapture(voice, log, false, true, record)
+    }
+    if (!current()) return
+    if (!iosVoiceInput.continuousActive) voiceActivity.setActive(false, CONTINUOUS_CAPTURE_HOLDER)
+  }
+  private stopContinuousVoiceCapture(): void {
+    ++this.continuousCaptureToken
+    voiceActivity.setActive(false, CONTINUOUS_CAPTURE_HOLDER)
+    void iosVoiceInput.stopContinuousCapture().catch(error => this.logBluetooth(`Stop continuous capture: ${String(error)}`))
+  }
   /** The transcription provider setting and the keys the cloud ones need. */
   private voiceProvider(): VoiceProviderSelection {
     return { provider: voiceProviderSetting.get(), elevenLabsApiKey: elevenLabsApiKeySetting.get(),
-      openAiApiKey: openAiApiKeySetting.get(), sonioxApiKey: sonioxApiKeySetting.get() }
+      openAiApiKey: openAiApiKeySetting.get(), sonioxApiKey: sonioxApiKeySetting.get(),
+      whisperServerUrl: whisperServerUrlSetting.get(), whisperServerModel: whisperServerModelSetting.get(),
+      whisperServerLanguage: whisperServerLanguageSetting.get(), whisperServerApiKey: whisperServerApiKeySetting.get() }
   }
   private logBluetooth(message: string): void {
     const line = `${new Date().toISOString()} [${this.active ? 'foreground' : 'background'}${UIApplication.sharedApplication.protectedDataAvailable ? '' : ',protected-data-unavailable'}] ${message}`

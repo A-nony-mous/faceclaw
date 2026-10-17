@@ -17,6 +17,7 @@ import {
   type AssistantModel,
 } from "~/assistant/models";
 import { isLocalModelReady } from "../native/llama";
+import { normalizeWhisperServerUrl } from "../native/whisper-server-stt";
 import { drawRightValueMenuItem, drawToggleMenuItem, MenuItem, openModalMenu } from "./menu";
 import { ANIMATION_SPEEDS, animationSpeedLabel, scaleAnimationDuration, type AnimationSpeed } from "./animation-speed";
 import { MENU_ANIMATION_KEY } from "./menu-animation-pref";
@@ -814,7 +815,8 @@ export const ringConnectionModeSetting = new ConfigSettingEnum<RingConnectionMod
 // runs -- see the same note in native/voice-control.ts. The "whisper" value
 // keeps its name (it's a persisted setting on real installs) but its label
 // below now says "OpenAI" to tell the two apart in the picker.
-export type VoiceProvider = "onboard" | "onboard-whisper" | "elevenlabs" | "whisper" | "soniox";
+// "whisper-server" is a self-hosted OpenAI-compatible Whisper (e.g. vLLM).
+export type VoiceProvider = "onboard" | "onboard-whisper" | "elevenlabs" | "whisper" | "soniox" | "whisper-server";
 
 // On iOS "onboard" is Apple's on-device recognizer, and there is no
 // "onboard-whisper" (the sherpa-onnx models are Android-only).
@@ -824,6 +826,7 @@ const voiceProviderLabels: Record<VoiceProvider, string> = {
   elevenlabs: "ElevenLabs",
   whisper: "OpenAI (Whisper)",
   soniox: "Soniox",
+  "whisper-server": "Whisper server (self-hosted)",
 };
 
 export const voiceProviderSetting = new ConfigSettingEnum<VoiceProvider>({
@@ -831,17 +834,20 @@ export const voiceProviderSetting = new ConfigSettingEnum<VoiceProvider>({
   label: "Transcription Provider",
   storageKey: "voice.provider",
   defaultValue: "onboard",
-  values: global.isIOS ? ["onboard", "elevenlabs", "whisper", "soniox"] : ["onboard", "onboard-whisper", "elevenlabs", "whisper", "soniox"],
+  values: global.isIOS
+    ? ["onboard", "elevenlabs", "whisper", "soniox", "whisper-server"]
+    : ["onboard", "onboard-whisper", "elevenlabs", "whisper", "soniox", "whisper-server"],
   formatValue: (value) => voiceProviderLabels[value] ?? value,
   isDisabled: (value) => {
     if (value === "elevenlabs") return elevenLabsApiKeySetting.get().trim().length === 0;
     if (value === "whisper") return openAiApiKeySetting.get().trim().length === 0;
     if (value === "soniox") return sonioxApiKeySetting.get().trim().length === 0;
+    if (value === "whisper-server") return !normalizeWhisperServerUrl(whisperServerUrlSetting.get());
     return false;
   },
   description: global.isIOS
-    ? "Speech-to-text engine for voice input. ElevenLabs, OpenAI, and Soniox are cloud services that need an API key (Settings > API Keys), with significantly better accuracy than on-device transcription. On-device uses your iPhone's speech language and never leaves the phone."
-    : "Speech-to-text engine for voice input. ElevenLabs, OpenAI, and Soniox are cloud services that need an API key, with significantly better accuracy than on-device transcription. The two On-device options need their voice model downloaded (below) and never leave the phone.",
+    ? "Speech-to-text engine for voice input. ElevenLabs, OpenAI, and Soniox are cloud services that need an API key (Settings > API Keys), with significantly better accuracy than on-device transcription. Whisper server is your own OpenAI-compatible Whisper (set its URL below). On-device uses your iPhone's speech language and never leaves the phone."
+    : "Speech-to-text engine for voice input. ElevenLabs, OpenAI, and Soniox are cloud services that need an API key, with significantly better accuracy than on-device transcription. Whisper server is your own OpenAI-compatible Whisper (set its URL below). The two On-device options need their voice model downloaded (below) and never leave the phone.",
 });
 
 const wakeWordActionLabels: Record<WakeWordAction, string> = {
@@ -858,6 +864,14 @@ export const wakeWordActionSetting = new ConfigSettingEnum<WakeWordAction>({
   values: ["voice-input", "off", "turn-screen-on"],
   formatValue: (value) => wakeWordActionLabels[value] ?? value,
   description: "What saying \"Hey Even\" does: start voice input, just turn the screen on, or nothing.",
+});
+
+export const saveTranscribeAudioSetting = new ConfigSettingBoolean({
+  id: "save-transcribe-audio",
+  label: "Save Transcribe audio",
+  storageKey: "voice.saveTranscribeAudio",
+  defaultValue: true,
+  description: "Record each Transcribe session's audio as a WAV file in Downloads (about 2 MB per minute), named like its transcript. Recordings are kept until you delete them.",
 });
 
 export const saveVoiceRecordingsSetting = new ConfigSettingBoolean({
@@ -966,6 +980,54 @@ export const sonioxApiKeySetting = new ConfigSettingString({
   glassesEditTitle: "Edit Soniox key",
   formatValue: (value) => (value ? `${value.slice(0, 6)}...` : "(not set)"),
   description: "Soniox API key, used when Soniox is the transcription provider.",
+});
+
+export const whisperServerUrlSetting = new ConfigSettingString({
+  id: "whisper-server-url",
+  label: "Whisper server URL",
+  storageKey: "voice.whisperServerUrl",
+  defaultValue: "",
+  editorTitle: "Whisper server URL (e.g. http://100.x.y.z:8004/v1)",
+  glassesEditTitle: "Edit Whisper server URL",
+  formatValue: (value) => value || "(not set)",
+  validate: (value) => (!value.trim() || normalizeWhisperServerUrl(value) ? null : "Enter an http:// or https:// address."),
+  description:
+    "API root of an OpenAI-compatible Whisper server (vLLM, speaches, LocalAI...), used when Whisper server is the transcription provider. On iOS a plain-http address must also be allowed by the app's App Transport Security exceptions.",
+});
+
+export const whisperServerModelSetting = new ConfigSettingString({
+  id: "whisper-server-model",
+  label: "Whisper server model",
+  storageKey: "voice.whisperServerModel",
+  defaultValue: "",
+  editorTitle: "Whisper model id (empty: server's first)",
+  glassesEditTitle: "Edit Whisper model",
+  formatValue: (value) => value || "(server default)",
+  description: "Model id sent to the Whisper server. Leave empty to use the first model the server lists.",
+});
+
+export const whisperServerLanguageSetting = new ConfigSettingString({
+  id: "whisper-server-language",
+  label: "Whisper language",
+  storageKey: "voice.whisperServerLanguage",
+  defaultValue: "",
+  editorTitle: "Language code, e.g. en or sk (empty: auto)",
+  glassesEditTitle: "Edit Whisper language",
+  formatValue: (value) => value || "Auto-detect",
+  validate: (value) => (!value.trim() || /^[a-z]{2,3}$/i.test(value.trim()) ? null : "Use a language code like en, sk or cs."),
+  description:
+    "Spoken language for the Whisper server. Leave empty to auto-detect; a wrong fixed language makes Whisper translate into it instead of transcribing.",
+});
+
+export const whisperServerApiKeySetting = new ConfigSettingString({
+  id: "whisper-server-api-key",
+  label: "Whisper server key",
+  storageKey: "voice.whisperServerApiKey",
+  defaultValue: "",
+  editorTitle: "Whisper server API key (optional)",
+  glassesEditTitle: "Edit Whisper server key",
+  formatValue: (value) => (value ? `${value.slice(0, 6)}...` : "(none)"),
+  description: "Bearer token for the Whisper server, if it requires one.",
 });
 
 export const anthropicApiKeySetting = new ConfigSettingString({

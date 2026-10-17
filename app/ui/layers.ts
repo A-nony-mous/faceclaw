@@ -31,8 +31,11 @@ export type LayerActions = {
   startVoiceCapture: (endpointing?: boolean) => Promise<void> | void;
   /** Stop push-to-talk; awaits native recognition, or commits a cloud provider for a final result. */
   stopVoiceCapture: () => Promise<void> | void;
-  /** Start continuous capture (Transcribe); shares the mic with push-to-talk. */
-  startContinuousVoiceCapture: () => Promise<void> | void;
+  /**
+   * Start continuous capture (Transcribe); shares the mic with push-to-talk.
+   * recordAs names a WAV of the captured audio in Downloads (iOS, when enabled).
+   */
+  startContinuousVoiceCapture: (options?: { recordAs?: string }) => Promise<void> | void;
   stopContinuousVoiceCapture: () => Promise<void> | void;
   /** Play a CFW tone-sequencer payload (see sound-effects.ts). */
   playBuzzerSequence: (payload: Uint8Array) => Promise<void> | void;

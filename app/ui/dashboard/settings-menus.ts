@@ -61,6 +61,11 @@ import {
   phoneRotationSetting,
   ringConnectionModeSetting,
   sonioxApiKeySetting,
+  saveTranscribeAudioSetting,
+  whisperServerApiKeySetting,
+  whisperServerLanguageSetting,
+  whisperServerModelSetting,
+  whisperServerUrlSetting,
   screenFadeSetting,
   enumSettingMenuItem,
   firmwareDebugFlagsSetting,
@@ -124,6 +129,7 @@ function settingsSections(): SettingsSection[] {
       items: [
         enumSettingMenuItem(wakeWordActionSetting),
         enumSettingMenuItem(voiceProviderSetting),
+        ...whisperServerMenuItems(),
         asrModelMenuItem("moonshine"),
         asrModelMenuItem("whisper-base-en"),
       ],
@@ -237,7 +243,7 @@ function settingsSections(): SettingsSection[] {
     if (section.label === "Developer") return { ...section, items: [toggleSettingMenuItem(showBleBandwidthSetting)] };
     // No downloadable on-device models: iOS's on-device option is Apple's recognizer.
     if (section.label === "Voice") return { label: "Voice", items: [enumSettingMenuItem(wakeWordActionSetting),
-      enumSettingMenuItem(voiceProviderSetting)] };
+      enumSettingMenuItem(voiceProviderSetting), toggleSettingMenuItem(saveTranscribeAudioSetting), ...whisperServerMenuItems()] };
     if (deferred.has(section.label)) return { label: section.label, items: [{
       label: "Not available on iOS yet", disabled: true, onSelect: () => {},
       description: `${section.label} integration has not been ported to iOS.`,
@@ -449,6 +455,19 @@ function asrModelStatusText(id: AsrModelId): string {
     return `${pct}% of ${asrModelMb(id)}`;
   }
   return "not downloaded";
+}
+
+/**
+ * The self-hosted Whisper server's settings. Always listed: the provider
+ * option stays disabled until the URL is set.
+ */
+function whisperServerMenuItems(): MenuItem[] {
+  return [
+    textSettingMenuItem(whisperServerUrlSetting),
+    textSettingMenuItem(whisperServerModelSetting),
+    textSettingMenuItem(whisperServerLanguageSetting),
+    textSettingMenuItem(whisperServerApiKeySetting),
+  ];
 }
 
 /** Download/cancel/delete management for one on-device transcription model. */
