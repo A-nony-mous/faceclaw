@@ -6,6 +6,13 @@ OpenAI-compatible API server and streams the answer back to the glasses. Hermes
 runs its own tools and keeps the conversation: each Faceclaw assistant
 conversation maps to one Hermes session (`X-Hermes-Session-Id`), and only the
 latest message is sent. Faceclaw's own glasses tools are not offered to Hermes.
+The session ID is saved with the conversation, so a conversation restored after
+an app restart continues the same Hermes session.
+
+A Hermes turn may run for up to 20 minutes (other models get 2), because Hermes
+runs whole multi-tool tasks in one request and closing the stream interrupts the
+run on the server. A run that fails or is interrupted on the server shows as an
+error on the glasses, with any partial answer kept.
 
 ## Enable the API server in Hermes
 

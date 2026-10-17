@@ -60,6 +60,60 @@ test('a rejected key and an empty stream are errors', () => {
   assert.deepEqual(empty.errors, ['Hermes stream ended without a reply']);
 });
 
+test('failed, interrupted, empty and cut-off runs are errors, not blank answers', () => {
+  const api = hermes();
+  const ending = (lines, close = 'done') => {
+    const s = stream(api);
+    for (const line of lines) s.request.listener.onLine(line);
+    if (close === 'done') s.request.listener.onLine('data: [DONE]');
+    else s.request.listener.onComplete();
+    assert.deepEqual(s.results, []);
+    return s.errors;
+  };
+  // Hermes's finish chunk: an error object rides along only when there is a message to show.
+  const finish = (reason, extra = {}) => `data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: reason }], ...extra })}`;
+  assert.deepEqual(ending([chunk({ content: 'Half' }), finish('error')]), ['Hermes: the agent run failed']);
+  assert.deepEqual(ending([finish('error', { error: { message: 'admission_conflict', type: 'agent_error' } })]), ['Hermes: admission_conflict']);
+  assert.deepEqual(ending([chunk({ content: 'Half' }), finish('cancelled')]), ['Hermes: the agent run was interrupted']);
+  assert.deepEqual(ending([finish('stop')]), ['Hermes ended the turn without a reply']);
+  assert.deepEqual(ending([chunk({ content: 'Half' })], 'close'), ['Hermes: the reply was cut off']);
+  const closed = stream(api);
+  closed.request.listener.onLine(chunk({ content: 'Kiwi' }, 'stop'));
+  closed.request.listener.onComplete();
+  assert.deepEqual(closed.results.map((r) => r.text), ['Kiwi'], 'a finished stream may close without [DONE]');
+});
+
+test('a restored conversation keeps its Hermes session, and Hermes turns get a long deadline', () => {
+  const requests = [], delays = [];
+  const load = loader({ global: { isIOS: false, isAndroid: true }, setTimeout: (_fn, ms) => { delays.push(ms); return 0; }, clearTimeout: () => {} }, {
+    './sse': { openSseRequest: (_url, _body, headers, listener) => {
+      const request = { headers, listener, cancel() {} };
+      requests.push(request);
+      return request;
+    } },
+    '../native/llama': { streamLocalQwen: () => assert.fail('no local model') },
+    './bridge-client': { assistantBridge: {} }, './tool-registry': { toolRegistry: {} },
+    '../prompts': { ASSISTANT_SYSTEM_PROMPT_BASE: '', buildAssistantSystemPrompt: () => '', describeAssistantContext: () => '' },
+  });
+  const { AssistantSession } = load('app/assistant/session.ts');
+  const config = { kind: 'direct', llm: { selection: 'hermes', provider: 'hermes', model: 'hermes-agent', apiKey: 'k', baseUrl: 'http://hermes-host:8642' } };
+  const callbacks = { onTextDelta() {}, onToolActivity() {}, onError: (e) => assert.fail(e), onTurnDone() {} };
+  const turn = (session, text) => {
+    session.sendUtterance(text, {}, callbacks);
+    const request = requests.at(-1);
+    request.listener.onLine(chunk({ content: 'OK' }, 'stop'));
+    request.listener.onLine('data: [DONE]');
+    return request.headers['X-Hermes-Session-Id'];
+  };
+  const first = new AssistantSession(config, undefined);
+  const id = turn(first, 'Remember kiwi.');
+  assert.match(id, /^faceclaw-/);
+  assert.ok(delays.includes(20 * 60 * 1000), 'Hermes turns are not held to the 2-minute LLM cap');
+  const restored = new AssistantSession(config, undefined, JSON.parse(JSON.stringify(first.history())));
+  assert.equal(turn(restored, 'Which word?'), id);
+  assert.notEqual(turn(new AssistantSession(config, undefined), 'Hello'), id, 'a new conversation gets its own session');
+});
+
 test('URL normalization adds /v1 to a bare host and drops the endpoint path', () => {
   const { normalizeHermesUrl } = hermes();
   assert.equal(normalizeHermesUrl('http://192.0.2.10:8642'), 'http://192.0.2.10:8642/v1');

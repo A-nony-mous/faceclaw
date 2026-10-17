@@ -36,9 +36,23 @@ export function streamHermesChat(options: HermesStreamOptions): LlmStreamHandle 
   };
   const done = () => {
     if (settled) return;
+    // A failed or interrupted run still ends with a finish chunk and [DONE]; the
+    // chunk carries an error object only when Hermes has a message to show.
+    if (finishReason === "error") {
+      fail("Hermes: the agent run failed");
+      return;
+    }
+    if (finishReason === "cancelled") {
+      fail("Hermes: the agent run was interrupted");
+      return;
+    }
+    if (!text) {
+      fail("Hermes ended the turn without a reply");
+      return;
+    }
     settled = true;
     request?.cancel();
-    options.onDone({ text, content: text ? [{ type: "text", text }] : [], stopReason: finishReason === "length" ? "max_tokens" : "end_turn" });
+    options.onDone({ text, content: [{ type: "text", text }], stopReason: finishReason === "length" ? "max_tokens" : "end_turn" });
   };
 
   const baseUrl = normalizeHermesUrl(options.baseUrl);
@@ -86,8 +100,9 @@ export function streamHermesChat(options: HermesStreamOptions): LlmStreamHandle 
       if (choice?.finish_reason) finishReason = String(choice.finish_reason);
     },
     onHttpError: (code: number, errorBody: string) => fail(describeHttpError(Number(code), String(errorBody))),
-    // Some servers close without [DONE] after the final chunk.
-    onComplete: () => (finishReason || text ? done() : fail("Hermes stream ended without a reply")),
+    // Some servers close without [DONE] after the final chunk. Hermes always sends
+    // a finish_reason, so a stream closed without one was cut off.
+    onComplete: () => (finishReason ? done() : fail(text ? "Hermes: the reply was cut off" : "Hermes stream ended without a reply")),
     onFailure: (message: string) => fail(`Hermes connection failed: ${String(message)}`),
   };
 
