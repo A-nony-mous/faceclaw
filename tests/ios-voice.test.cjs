@@ -11,14 +11,20 @@ function harness() {
   // Stands in for cloud-stt-provider: any provider but "onboard" is a keyed cloud one.
   const provider = {
     usesCloudStt: voice => voice.provider !== 'onboard',
-    createCloudSttClient(voice, options) {
+    createCloudSttClient(voice, options, continuous) {
       if (voice.provider === 'onboard') return null;
-      const client = { options, pcm: [], started: false, finished: 0, stopped: false,
+      const client = { options, continuous, pcm: [], started: false, finished: 0, stopped: false,
         start() { this.started = true; }, acceptPcm(bytes) { this.pcm.push([...bytes]); },
         finish() { this.finished++; }, stop() { this.stopped = true; } };
       clouds.push(client); return client;
     },
   };
+  const recordings = [];
+  class FakeRecorder {
+    static open(name) { const r = new FakeRecorder(); r.name = name; r.path = `/Downloads/${name}.wav`; r.pcm = []; r.closed = false; recordings.push(r); return r; }
+    append(bytes) { this.pcm.push(...bytes); }
+    close() { this.closed = true; }
+  }
   let authorization = 3, microphoneAuthorization = 3, microphoneRequests = 0, permissionRequests = 0, release;
   const sandbox = { exports: {}, FaceclawSpeech: { new: () => native, authorizationStatus: () => authorization,
     requestAuthorization: done => { permissionRequests++; done(3); },
@@ -26,7 +32,7 @@ function harness() {
     requestMicrophoneAuthorization: done => { microphoneRequests++; done(3); } },
     setTimeout: fn => { timers.set(fn, fn); return fn; }, clearTimeout: fn => timers.delete(fn),
     NSData: { dataWithBytesLength: (b, n) => Buffer.from(b, 0, n) }, interop: { handleof: b => b, bufferFromData: d => d },
-    require: name => name === './cloud-stt-provider' ? provider : {} };
+    require: name => name === './cloud-stt-provider' ? provider : name === './wav-recorder.ios' ? { WavRecorder: FakeRecorder } : {} };
   vm.runInNewContext(ts.transpileModule(fs.readFileSync('app/native/voice-control.ios.ts', 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText, sandbox);
   const bridge = new sandbox.exports.IosVoiceControlBridge();
@@ -37,7 +43,7 @@ function harness() {
     return Promise.resolve();
   } };
   const onboard = { provider: 'onboard', elevenLabsApiKey: '', openAiApiKey: '', sonioxApiKey: '' };
-  return { bridge, native, session, audio, commands, text, timers, clouds, release: () => release(),
+  return { bridge, native, session, audio, commands, text, timers, clouds, recordings, release: () => release(),
     onboard, cloud: { ...onboard, provider: 'soniox', sonioxApiKey: 'key' },
     microphoneAuthorization: value => { microphoneAuthorization = value; }, microphoneRequests: () => microphoneRequests,
     authorization: value => { authorization = value; }, permissionRequests: () => permissionRequests,
@@ -212,4 +218,60 @@ test('cloud capture times out a missing final, keeps native errors, and ends on 
   await h.bridge.startPhoneCapture(h.cloud, () => {});
   assert.equal(h.clouds[2].started, false, 'no connection without audio');
   assert.match(h.bridge.statusText, /No phone microphone/);
+});
+
+test('continuous capture needs a cloud provider, shares its mic with push-to-talk, and drains pause segments on stop', async () => {
+  const h = harness(); let ends = 0; h.bridge.onSpeechEnd(() => ends++);
+  assert.equal(h.bridge.supportsContinuous(h.onboard), false);
+  assert.equal(h.bridge.supportsContinuous(h.cloud), true);
+  const start = h.bridge.startGlassesCapture(h.session, h.cloud, () => {}, false, true); h.release(); await start;
+  assert.deepEqual(h.native.pcmCapture, { endpointing: false, phone: false });
+  const [cloud] = h.clouds;
+  assert.equal(cloud.continuous(), true, 'pauses commit segments while continuous');
+  // Push-to-talk joins instead of restarting the mic, and releasing it keeps the capture.
+  await h.bridge.startGlassesCapture(h.session, h.cloud, () => {});
+  await h.bridge.stopPushToTalk();
+  assert.equal(h.clouds.length, 1); assert.deepEqual(h.commands, [true]); assert.equal(h.native.finished, undefined);
+  cloud.options.onTranscript({ text: 'First thought.', isFinal: true, paragraphBreakAfter: true });
+  const stopped = h.bridge.stopContinuousCapture();
+  assert.deepEqual(h.commands, [true, false]); assert.equal(h.native.finished, true);
+  h.event({ kind: 'ended', message: 'Transcription stopped.' });
+  assert.equal(cloud.finished, 1);
+  // An earlier pause segment answering late must not end the drain.
+  cloud.options.onTranscript({ text: 'Second thought.', isFinal: true, paragraphBreakAfter: true });
+  assert.equal(cloud.stopped, false);
+  cloud.options.onTranscript({ text: 'The tail.', isFinal: true, paragraphBreakAfter: false });
+  await stopped;
+  assert.equal(cloud.stopped, true);
+  assert.deepEqual(h.text.map(event => event.text), ['First thought.', 'Second thought.', 'The tail.']);
+  assert.equal(cloud.continuous(), false);
+  assert.ok(ends >= 1);
+});
+
+test('push-to-talk after Transcribe closed starts its own capture instead of joining the finalizing one', async () => {
+  const h = harness();
+  const start = h.bridge.startGlassesCapture(h.session, h.cloud, () => {}, false, true); h.release(); await start;
+  void h.bridge.stopContinuousCapture();
+  h.event({ kind: 'ended', message: 'Transcription stopped.' });
+  assert.equal(h.clouds[0].finished, 1, 'the closed window is still finalizing');
+  const ptt = h.bridge.startGlassesCapture(h.session, h.cloud, () => {}); h.release(); await ptt;
+  assert.equal(h.clouds.length, 2, 'push-to-talk got a capture of its own');
+  assert.equal(h.clouds[0].stopped, true);
+  assert.equal(h.clouds[1].continuous(), false);
+});
+
+test('a continuous capture asked to record writes every PCM chunk to its WAV and closes it when the capture ends', async () => {
+  const h = harness();
+  const start = h.bridge.startGlassesCapture(h.session, h.cloud, () => {}, false, true, 'transcribe-2026-10-17-120000'); h.release(); await start;
+  assert.equal(h.recordings.length, 1);
+  assert.equal(h.recordings[0].name, 'transcribe-2026-10-17-120000');
+  h.native.pcmHandler(new Uint8Array([1, 2, 3, 4]));
+  h.native.pcmHandler(new Uint8Array([5, 6]));
+  assert.deepEqual(h.recordings[0].pcm, [1, 2, 3, 4, 5, 6]);
+  assert.deepEqual(h.clouds[0].pcm, [[1, 2, 3, 4], [5, 6]], 'transcription still gets the audio');
+  h.bridge.stop();
+  assert.equal(h.recordings[0].closed, true);
+  // Captures that don't ask (push-to-talk, Teleprompter) are not recorded.
+  const ptt = h.bridge.startGlassesCapture(h.session, h.cloud, () => {}); h.release(); await ptt;
+  assert.equal(h.recordings.length, 1);
 });

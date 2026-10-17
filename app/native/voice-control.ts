@@ -28,7 +28,9 @@ export type VoiceControlState = {
 // family, not with "onboard-whisper" below, which is the on-device sherpa-onnx
 // Whisper backend added alongside "onboard" (Moonshine). Kept as-is rather than
 // renamed, since it's a persisted settings value on real installs already.
-export type VoiceProviderKind = "onboard" | "onboard-whisper" | "elevenlabs" | "whisper" | "soniox";
+// "whisper-server" is a self-hosted OpenAI-compatible Whisper over HTTP
+// (whisper-server-stt.ts).
+export type VoiceProviderKind = "onboard" | "onboard-whisper" | "elevenlabs" | "whisper" | "soniox" | "whisper-server";
 
 export type VoiceTranscriptEvent = CloudSttTranscriptEvent & {
   /**
@@ -52,6 +54,10 @@ export type PushToTalkOptions = {
   elevenLabsApiKey: string;
   openAiApiKey: string;
   sonioxApiKey: string;
+  whisperServerUrl?: string;
+  whisperServerModel?: string;
+  whisperServerLanguage?: string;
+  whisperServerApiKey?: string;
   saveRecording: boolean;
   /**
    * Watch the mic and fire onSpeechEnd when the speaker stops. For hands-free
