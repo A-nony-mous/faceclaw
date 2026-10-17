@@ -45,6 +45,7 @@ import {
   statusBarVisibilitySetting,
   timeFormatSetting,
   wakeWordActionSetting,
+  wakeToLastAppSetting,
   windowBorderSetting,
 } from "../dashboard-settings";
 import { onAmbientCardsChanged } from "./ambient-cards";
@@ -966,7 +967,7 @@ class Shell {
     // "wake". Keep that directionality if delivery is delayed or duplicated.
     if (event.type === "display-wake") {
       this.lastInputAtMs = Date.now();
-      const wokeScreen = !this.screenOn && this.wake("sidebar");
+      const wokeScreen = !this.screenOn && this.wake(this.userWakeFocus());
       return { shell: wokeScreen, window: false };
     }
 
@@ -1005,7 +1006,7 @@ class Shell {
 
     if (!this.screenOn) {
       if (event.type === "double-click") {
-        this.wake("sidebar");
+        this.wake(this.userWakeFocus());
         return { shell: true, window: false };
       }
       return { shell: false, window: false };
@@ -1106,6 +1107,11 @@ class Shell {
       return { shell: false, window: true };
     }
     return { shell: false, window: false };
+  }
+
+  /** Where a user's double-tap wake lands: the last app, or the switcher (setting). */
+  userWakeFocus(): FocusKind {
+    return wakeToLastAppSetting.get() && this.foregroundWindow() ? "window" : "sidebar";
   }
 
   foregroundWindow(): ShellWindow | undefined {
