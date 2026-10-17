@@ -19,6 +19,9 @@
 * iOS: Add missing EvenHub icons on the phone home screen
 * Fix a bug where album art and track display could get out of sync if you advance twice quickly
 * Fix a bug where EvenHub searches with spaces in the search term would fail
+* Crashes in a webview renderer can no longer take down the rest of the app
+* EvenHub app localstorage is now partitioned by app
+* Fix issues that would prevent sign-in to EvenHub apps that rely on cross-domain navigation
 
 ## 0.8.3 - 2026-10-10
 

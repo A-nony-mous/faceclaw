@@ -32,9 +32,10 @@ export function createEvenHubWebView(session: EvenHubSession): EvenHubWebView {
       if (event.kind === 'call' && typeof event.name === 'string' && typeof event.args === 'string' && Number.isSafeInteger(event.id))
         session.handleBridgeCall(event.name, event.args, event.id)
       else if (event.kind === 'loaded') session.webViewLoaded()
-      else if (event.kind === 'error') session.webViewFailed(String(event.message))
+      else if (event.kind === 'error') session.webViewFailed(String(event.message), event.fatal === true)
       else if (event.kind === 'hidden') { const close = onClose; onClose = null; close?.() }
-      else if (event.kind === 'console') console.log(`[evenhub:${session.manifest.name}] ${event.message}`)
+      // 'notice': host-side events such as a blocked navigation, logged with the app's console.
+      else if (event.kind === 'console' || event.kind === 'notice') console.log(`[evenhub:${session.manifest.name}] ${event.message}`)
     } catch (error) { console.warn(`EvenHub bridge: ${error}`) }
   }
   // Defer loading until manager.ts has attached the session/window handles.
