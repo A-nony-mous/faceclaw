@@ -239,8 +239,11 @@ export type TrayWidget = {
   openWindow: () => { window: ShellWindow; opened: boolean } | null;
 };
 
-/** A new-notification popup: the shell modal, and the notification view inside it. */
-type NotificationPopup = { modal: ShellModalLayer; content: SingleNotificationLayer };
+/**
+ * A new-notification popup: the shell modal, and the notification view inside
+ * it (null for an app notification, which brings its own layer).
+ */
+type NotificationPopup = { modal: ShellModalLayer; content: SingleNotificationLayer | null };
 
 /**
  * The app switcher's selection while it is on a status bar item rather than
@@ -281,6 +284,18 @@ export type AssistantActivityEvent = {
 };
 
 export type FocusKind = "sidebar" | "window";
+
+/**
+ * A notification an app posts itself, rather than one Android posted. It
+ * opens in the same modal (and waits in the same queue) as Android
+ * notifications, but is not listed in the Notifications app.
+ */
+export type AppNotification = {
+  /** Unique per notification; must not collide with Android notification keys. */
+  key: string;
+  /** The modal's content; `close` takes the modal down. */
+  createLayer: (close: () => void) => Layer;
+};
 
 const noopActions: LayerActions = noopLayerActions;
 
@@ -437,9 +452,12 @@ class Shell {
   private readonly trayIcons = new Map<string, { icon: GrayImage; widget?: TrayWidget }>();
   private activeVoiceLayer: VoiceInputLayer | null = null;
   private activeKeyboardLayer: KeyboardInputLayer | null = null;
+  // App-posted notifications that are open or queued, by key.
+  private readonly appNotifications = new Map<string, AppNotification>();
   private readonly notificationModals = new NotificationModalQueue<NotificationPopup>({
     open: (notificationKey) => this.pushNotificationModal(notificationKey),
     isAvailable: (notificationKey) => {
+      if (this.appNotifications.has(notificationKey)) return true;
       const notification = readActiveNotifications(ALL_NOTIFICATIONS).find((item) => item.key === notificationKey);
       return !!notification && shouldShowNotificationOnGlasses(notification.packageName);
     },
@@ -866,25 +884,44 @@ class Shell {
    */
   notificationRemoved(notificationKey: string): void {
     const popup = this.notificationModals.withdrawn(notificationKey);
-    if (popup && !popup.content.outlivesNotification()) {
-      this.closeNotificationModal(popup);
+    if (popup && !popup.content?.outlivesNotification()) {
+      this.closeNotificationModal(popup, notificationKey);
     }
   }
 
+  /**
+   * Show an app's own notification the way new Android notifications are
+   * shown: in the notification modal, waking the screen for it if it was off.
+   */
+  postAppNotification(notification: AppNotification): void {
+    this.appNotifications.set(notification.key, notification);
+    const wokeScreen = this.screenOn ? false : this.wake("sidebar");
+    this.openNotificationModal(notification.key, wokeScreen);
+  }
+
   private pushNotificationModal(notificationKey: string): NotificationPopup {
-    const content = new SingleNotificationLayer(notificationKey, {
-      origin: "new-notification-modal",
-      onClose: () => this.closeNotificationModal(popup),
-    });
+    const appNotification = this.appNotifications.get(notificationKey);
+    const close = () => this.closeNotificationModal(popup, notificationKey);
+    const content = appNotification
+      ? null
+      : new SingleNotificationLayer(notificationKey, { origin: "new-notification-modal", onClose: close });
     const popup: NotificationPopup = {
       content,
-      modal: new ShellModalLayer(content, this.config.actions, () => this.notificationModals.removed(popup, this.screenOn)),
+      modal: new ShellModalLayer(
+        appNotification ? appNotification.createLayer(close) : content!,
+        this.config.actions,
+        () => {
+          this.appNotifications.delete(notificationKey);
+          this.notificationModals.removed(popup, this.screenOn);
+        },
+      ),
     };
     this.stack.push(popup.modal);
     return popup;
   }
 
-  private closeNotificationModal(popup: NotificationPopup): void {
+  private closeNotificationModal(popup: NotificationPopup, notificationKey: string): void {
+    this.appNotifications.delete(notificationKey);
     // The queue first: it opens the next notification or puts the screen back
     // to sleep, and then ignores the removal below. remove() rather than a
     // pop, so a menu opened over the modal doesn't leave it stuck.
