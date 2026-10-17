@@ -36,6 +36,8 @@ import {
   uiDepthSetting,
   assistantAllowProactiveSetting,
   assistantBackendSetting,
+  assistantHermesKeySetting,
+  assistantHermesUrlSetting,
   assistantBridgeHostSetting,
   assistantBridgePortSetting,
   assistantBridgeTokenSetting,
@@ -142,6 +144,8 @@ function settingsSections(): SettingsSection[] {
         // iOS offers cloud APIs; Android also supports local models and the bridge.
         enumSettingMenuItem(assistantBackendSetting),
         enumSettingMenuItem(assistantModelSetting),
+        textSettingMenuItem(assistantHermesUrlSetting),
+        textSettingMenuItem(assistantHermesKeySetting),
         ...(!global.isIOS ? [localModelMenuItem()] : []),
         toggleSettingMenuItem(assistantSkipConfirmationSetting),
         // iOS has no local LLM or agent bridge yet.
