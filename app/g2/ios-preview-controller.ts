@@ -148,7 +148,16 @@ export class IosPreviewController {
   private acknowledgedFrames = 0
   private logLines: string[] = []
   private logTimer: ReturnType<typeof setTimeout> | null = null
+  // Windows that want continuous capture, each with the recording it asked for
+  // ('' for none). They share one capture, which runs while any of them wants it.
+  private readonly continuousClients = new Map<string, string>()
+  // Continuous capture should (re)start once audio is available: a window
+  // asked, the glasses connected or disconnected, or the glasses lock or the
+  // app lifecycle cut it short. A capture that fails doesn't set it, so a
+  // broken start is retried on the next such change rather than in a loop.
+  private continuousPending = false
   private continuousCaptureToken = 0
+  private sessionConnected = false
   private readonly actions: LayerActions = {
     ...noopLayerActions,
     playBuzzerSequence: payload => this.communicator?.playBuzzerSequence(payload),
@@ -156,8 +165,8 @@ export class IosPreviewController {
     disconnect: () => this.disconnect(),
     startVoiceCapture: endpointing => this.startVoiceCapture(endpointing),
     stopVoiceCapture: () => iosVoiceInput.stopPushToTalk(),
-    startContinuousVoiceCapture: options => this.startContinuousVoiceCapture(options?.recordAs),
-    stopContinuousVoiceCapture: () => this.stopContinuousVoiceCapture(),
+    startContinuousVoiceCapture: (client, options) => this.startContinuousVoiceCapture(client, options?.recordAs),
+    stopContinuousVoiceCapture: client => this.stopContinuousVoiceCapture(client),
     startTextSettingEdit: async setting => { await this.editSetting(setting) },
     startTextSettingsEdit: async (settings, title, finished, toggle, cancelled) => {
       for (const setting of settings) if (!await this.editSetting(setting)) { cancelled?.(); return }
@@ -244,6 +253,8 @@ export class IosPreviewController {
       launchApp: id => this.launchApp(id), requestShellRender: () => this.requestShellRender() })
     registerNavigateTools(id => this.launchApp(id))
     registerRoamTools(id => this.launchApp(id))
+    // Every capture end (drained, failed, replaced) may leave continuous capture to restart.
+    iosVoiceInput.onSpeechEnd(() => this.syncContinuousCapture())
     for (const app of ALL_APPS) if (app.appId !== 'launcher' && !iosAppUnavailableReason(app.appId)) app.boot?.(this.buildAppContext(app))
   }
 
@@ -299,10 +310,12 @@ export class IosPreviewController {
     shell.foregroundWindow()?.requestRender()
     this.requestShellRender()
     this.syncEvenHubPhoneUi()
+    this.syncContinuousCapture()
   }
   pause(): void {
     if (!this.active) return
     this.active = false
+    if (iosVoiceInput.continuousSource === 'phone') this.continuousPending = true
     iosVoiceInput.stopPhoneCapture()
     // The phone preview is hidden; the glasses still own their screen and input.
     this.syncRuntime()
@@ -421,8 +434,10 @@ export class IosPreviewController {
     this.glassesLocked = locked
     if (locked) {
       this.glance.dismiss()
-      iosVoiceInput.handleSessionEnded('Glasses locked. Unlock your phone to start voice input again.')
-    }
+      if (iosVoiceInput.continuousSource === 'glasses') this.continuousPending = true
+      iosVoiceInput.handleSessionEnded('Glasses locked. Unlock your phone to start voice input again.',
+        'Glasses locked. Transcription resumes when you unlock your phone.')
+    } else this.syncContinuousCapture()
     void (async () => {
       await this.displayReady
       const display = this.display
@@ -720,6 +735,7 @@ export class IosPreviewController {
     this.maybeLaunchOnboarding(this.state)
     if (this.state.phase !== 'connected' && this.state.phase !== 'connecting') this.glassesWorn = null
     if (this.state.phase !== 'connected') iosVoiceInput.handleSessionEnded()
+    this.syncContinuousSession()
     shell.setBatteryLevels({ headset: this.state.battery, headsetCharging: this.state.charging })
     this.syncPresence()
     this.syncRuntime()
@@ -947,33 +963,88 @@ export class IosPreviewController {
       await iosVoiceInput.startPhoneCapture(voice, log, endpointing)
     }
   }
-  /** Open-ended capture (Transcribe, Teleprompter); holds voiceActivity like Android. */
-  private async startContinuousVoiceCapture(recordAs?: string): Promise<void> {
-    if (this.glassesLocked) return
-    const voice = this.voiceProvider()
-    if (!iosVoiceInput.supportsContinuous(voice)) {
+  /**
+   * Continuous capture on behalf of `client` (one id per window: Transcribe,
+   * Teleprompter, Calculator); it runs while any client wants it, as on Android.
+   * `recordAs` names a WAV of the audio in Downloads when Save Transcribe audio is on.
+   */
+  private startContinuousVoiceCapture(client: string, recordAs = ''): void {
+    if (!iosVoiceInput.supportsContinuous(this.voiceProvider())) {
       this.onError('Transcribe on iOS needs a cloud or Whisper server transcription provider (Settings > Voice > Transcription Provider).')
       return
     }
+    this.continuousClients.set(client, recordAs)
+    this.syncContinuousRecording()
+    // A listening capture is shared as it is; otherwise start one (after any drain).
+    if (!iosVoiceInput.continuousSource) this.continuousPending = true
+    this.syncContinuousCapture()
+  }
+  private stopContinuousVoiceCapture(client: string): void {
+    if (!this.continuousClients.delete(client)) return
+    this.syncContinuousRecording()
+    if (this.continuousClients.size > 0) return
+    // A start still awaiting permission or the mic backs off.
+    ++this.continuousCaptureToken
+    this.continuousPending = false
+    this.syncContinuousClaim()
+    void iosVoiceInput.stopContinuousCapture().catch(error => this.logBluetooth(`Stop continuous capture: ${String(error)}`))
+  }
+  /** Connecting or losing the glasses moves continuous capture to the new audio source. */
+  private syncContinuousSession(): void {
+    const connected = this.state.phase === 'connected'
+    if (connected !== this.sessionConnected && this.continuousClients.size > 0) this.continuousPending = true
+    this.sessionConnected = connected
+    this.syncContinuousCapture()
+  }
+  /**
+   * Keep continuous capture running while a window wants it: start a pending
+   * one once audio is available, and move a phone capture to the glasses once
+   * they connect. A glasses session supplies the audio, even while it
+   * reconnects (as on Android); the phone mic stands in only without one, while
+   * Faceclaw is in the foreground. Cheap enough to call on every state change.
+   */
+  private syncContinuousCapture(): void {
+    this.syncContinuousClaim()
+    if (this.continuousClients.size === 0 || this.glassesLocked) return
+    const glassesReady = !!this.communicator && this.state.phase === 'connected'
+    if (iosVoiceInput.continuousActive) {
+      // Draining or listening already. A phone capture from before the glasses
+      // connected is drained here, and its end restarts it on the glasses.
+      if (glassesReady && iosVoiceInput.continuousSource === 'phone') {
+        this.continuousPending = true
+        void iosVoiceInput.stopContinuousCapture()
+      }
+      return
+    }
+    if (!this.continuousPending || (this.communicator ? !glassesReady : !this.active)) return
+    this.continuousPending = false
+    void this.beginContinuousCapture()
+  }
+  private async beginContinuousCapture(): Promise<void> {
+    const voice = this.voiceProvider()
+    if (!iosVoiceInput.supportsContinuous(voice)) return
     // A stop during an await below bumps the token; this start then backs off.
     const token = ++this.continuousCaptureToken
     const current = () => token === this.continuousCaptureToken
     const log = (message: string) => this.logBluetooth(message)
-    const record = recordAs && saveTranscribeAudioSetting.get() ? recordAs : ''
+    // Claimed before the capture starts so other mic users stand down first, as on Android.
     voiceActivity.setActive(true, CONTINUOUS_CAPTURE_HOLDER)
     const communicator = this.communicator
-    if (communicator && this.state.phase === 'connected') {
-      await iosVoiceInput.startGlassesCapture(communicator, voice, log, false, true, record)
-    } else if (this.active && await iosVoiceInput.prepare(this.active, true, voice) && current() && this.active && !this.glassesLocked) {
-      await iosVoiceInput.startPhoneCapture(voice, log, false, true, record)
+    if (communicator) {
+      await iosVoiceInput.startGlassesCapture(communicator, voice, log, false, true)
+    } else if (await iosVoiceInput.prepare(this.active, true, voice) && current() && this.active && !this.glassesLocked && !this.communicator) {
+      await iosVoiceInput.startPhoneCapture(voice, log, false, true)
     }
-    if (!current()) return
-    if (!iosVoiceInput.continuousActive) voiceActivity.setActive(false, CONTINUOUS_CAPTURE_HOLDER)
+    if (current()) this.syncContinuousClaim()
   }
-  private stopContinuousVoiceCapture(): void {
-    ++this.continuousCaptureToken
-    voiceActivity.setActive(false, CONTINUOUS_CAPTURE_HOLDER)
-    void iosVoiceInput.stopContinuousCapture().catch(error => this.logBluetooth(`Stop continuous capture: ${String(error)}`))
+  /** Other mic users stand down while continuous capture really holds the mic, not merely while a window wants it. */
+  private syncContinuousClaim(): void {
+    voiceActivity.setActive(this.continuousClients.size > 0 && iosVoiceInput.continuousActive, CONTINUOUS_CAPTURE_HOLDER)
+  }
+  /** Record to the first client's requested name while Save Transcribe audio is on. */
+  private syncContinuousRecording(): void {
+    const name = saveTranscribeAudioSetting.get() ? [...this.continuousClients.values()].find(Boolean) ?? '' : ''
+    iosVoiceInput.recordTo(name)
   }
   /** The transcription provider setting and the keys the cloud ones need. */
   private voiceProvider(): VoiceProviderSelection {

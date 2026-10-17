@@ -5,8 +5,10 @@ import { CLOUD_STT_SAMPLE_RATE, type CloudSttClient, type CloudSttOptions } from
  * speaches, LocalAI): batch POST {baseUrl}/audio/transcriptions with a WAV file.
  * Each segment (a push-to-talk utterance, or a Transcribe span ended by a pause)
  * is one request, finalized in audio order; an open segment is re-sent every
- * INTERIM_STEP_BYTES for provisional text. start() lists {baseUrl}/models to check
- * reachability and pick a model when none is configured.
+ * INTERIM_STEP_BYTES for provisional text. A segment that runs SEGMENT_MAX_BYTES
+ * without a pause is cut into requests that still leave as one final. start()
+ * lists {baseUrl}/models to check reachability and pick a model when none is
+ * configured.
  */
 
 export type WhisperServerConfig = {
@@ -29,11 +31,15 @@ export type WhisperHttpResponse = { status: number; text: string };
 export type WhisperHttp = (request: WhisperHttpRequest) => Promise<WhisperHttpResponse>;
 
 const BYTES_PER_SECOND = CLOUD_STT_SAMPLE_RATE * 2;
-// Provisional transcripts: first after one second of audio, then every 1.5s,
-// and not for segments past Whisper's 30s window (each would re-send it all).
+// Provisional transcripts: first after one second of audio, then every 1.5s.
 const INTERIM_MIN_BYTES = BYTES_PER_SECOND;
 const INTERIM_STEP_BYTES = BYTES_PER_SECOND * 1.5;
-const INTERIM_MAX_BYTES = BYTES_PER_SECOND * 30;
+// Steady speech or background noise can keep the pause detector from ever
+// ending a span. Such a segment is cut at this length, inside Whisper's 30s
+// window and well within FINAL_TIMEOUT_MS, after its quietest chunk among the
+// last SPLIT_SEARCH_BYTES so a word is less likely to straddle the cut.
+const SEGMENT_MAX_BYTES = BYTES_PER_SECOND * 25;
+const SPLIT_SEARCH_BYTES = BYTES_PER_SECOND * 5;
 const MODELS_TIMEOUT_MS = 5000;
 const INTERIM_TIMEOUT_MS = 10000;
 const FINAL_TIMEOUT_MS = 12000;
@@ -48,6 +54,8 @@ export const WHISPER_SERVER_FINAL_TIMEOUT_MS = FINAL_TIMEOUT_MS * 2 + FINAL_RETR
 
 type Segment = {
   chunks: Uint8Array[];
+  /** RMS of each chunk. */
+  levels: number[];
   bytes: number;
   peakRms: number;
   text: string;
@@ -56,6 +64,8 @@ type Segment = {
   paragraphBreakAfter: boolean;
   /** Emit a final even when empty: the end of push-to-talk needs one. */
   required: boolean;
+  /** Cut for length: its final leaves joined with the next segment's. */
+  continues: boolean;
   interimInFlight: boolean;
   interimBytes: number;
 };
@@ -120,10 +130,13 @@ export class WhisperServerSttClient implements CloudSttClient {
   acceptPcm(pcm: Uint8Array): void {
     if (this.closed || !pcm.length) return;
     const segment = this.openSegment();
+    const level = rms(pcm);
     segment.chunks.push(pcm.slice());
+    segment.levels.push(level);
     segment.bytes += pcm.length;
-    segment.peakRms = Math.max(segment.peakRms, rms(pcm));
-    this.maybeRequestInterim(segment);
+    segment.peakRms = Math.max(segment.peakRms, level);
+    if (segment.bytes >= SEGMENT_MAX_BYTES) this.splitSegment(segment);
+    this.maybeRequestInterim(this.segments[this.segments.length - 1]!);
   }
 
   /** A pause in continuous capture: transcribe what came before it. */
@@ -145,16 +158,54 @@ export class WhisperServerSttClient implements CloudSttClient {
     const last = this.segments[this.segments.length - 1];
     if (last && !last.closed) return last;
     const segment: Segment = {
-      chunks: [], bytes: 0, peakRms: 0, text: "", final: false, closed: false,
-      paragraphBreakAfter: false, required: false, interimInFlight: false, interimBytes: 0,
+      chunks: [], levels: [], bytes: 0, peakRms: 0, text: "", final: false, closed: false,
+      paragraphBreakAfter: false, required: false, continues: false, interimInFlight: false, interimBytes: 0,
     };
     this.segments.push(segment);
     return segment;
   }
 
+  /**
+   * Close the open segment at SEGMENT_MAX_BYTES and carry the audio after its
+   * cut into a new one. The cut is after the quietest chunk among the last
+   * SPLIT_SEARCH_BYTES; the first chunk always stays.
+   */
+  private splitSegment(segment: Segment): void {
+    let cut = segment.chunks.length - 1;
+    let quietest = Infinity;
+    let carried = 0;
+    for (let i = segment.chunks.length - 1; i > 0 && carried <= SPLIT_SEARCH_BYTES; i--) {
+      if (segment.levels[i]! < quietest) {
+        quietest = segment.levels[i]!;
+        cut = i;
+      }
+      carried += segment.chunks[i]!.length;
+    }
+    const chunks = segment.chunks.splice(cut + 1);
+    const levels = segment.levels.splice(cut + 1);
+    for (const chunk of chunks) segment.bytes -= chunk.length;
+    segment.peakRms = peak(segment.levels);
+    segment.continues = true;
+    this.closeSegment(false, false);
+    if (!chunks.length) return;
+    const next = this.openSegment();
+    next.chunks = chunks;
+    next.levels = levels;
+    for (const chunk of chunks) next.bytes += chunk.length;
+    next.peakRms = peak(levels);
+  }
+
   private closeSegment(paragraphBreakAfter: boolean, required: boolean): void {
     if (this.closed) return;
     const last = this.segments[this.segments.length - 1];
+    if (last?.closed && last.continues) {
+      // Cut for length with nothing after it yet: this boundary ends its run.
+      last.continues = false;
+      last.paragraphBreakAfter = paragraphBreakAfter;
+      last.required = required;
+      if (last.final) this.emit();
+      return;
+    }
     if (!last || last.closed) {
       // Nothing new since the last boundary. Push-to-talk still needs a final.
       if (required) this.finalize(this.openSegment(), "", paragraphBreakAfter, required);
@@ -192,7 +243,7 @@ export class WhisperServerSttClient implements CloudSttClient {
 
   private maybeRequestInterim(segment: Segment): void {
     if (!this.ready || segment.interimInFlight || segment.closed) return;
-    if (segment.bytes < INTERIM_MIN_BYTES || segment.bytes > INTERIM_MAX_BYTES) return;
+    if (segment.bytes < INTERIM_MIN_BYTES) return;
     if (segment.bytes - segment.interimBytes < INTERIM_STEP_BYTES) return;
     if (segment.peakRms < SILENCE_RMS) return;
     segment.interimInFlight = true;
@@ -221,14 +272,20 @@ export class WhisperServerSttClient implements CloudSttClient {
   }
 
   /**
-   * Finals leave in audio order, even when a later request answers first;
-   * whatever is not final yet is shown as one provisional transcript.
+   * Finals leave in audio order, even when a later request answers first, and
+   * segments cut for length leave as one final with the segment that ends
+   * their run; whatever is not final yet is shown as one provisional transcript.
    */
   private emit(): void {
-    while (this.segments.length && this.segments[0]!.final) {
-      const segment = this.segments.shift()!;
-      if (!segment.text && !segment.required) continue;
-      this.options.onTranscript({ text: segment.text, isFinal: true, paragraphBreakAfter: segment.paragraphBreakAfter });
+    for (;;) {
+      let end = 0;
+      while (this.segments[end]?.final && this.segments[end]!.continues) end++;
+      if (!this.segments[end]?.final) break;
+      const run = this.segments.splice(0, end + 1);
+      const last = run[run.length - 1]!;
+      const text = run.map((segment) => segment.text.trim()).filter(Boolean).join(" ");
+      if (!text && !last.required) continue;
+      this.options.onTranscript({ text, isFinal: true, paragraphBreakAfter: last.paragraphBreakAfter });
     }
     const pending = this.segments.filter((segment) => segment.text.trim());
     if (!pending.length) return;
@@ -289,6 +346,12 @@ function firstModelId(body: string): string {
   } catch {
     return "";
   }
+}
+
+function peak(levels: number[]): number {
+  let max = 0;
+  for (const level of levels) max = Math.max(max, level);
+  return max;
 }
 
 /** RMS of a PCM16LE chunk. */
@@ -367,16 +430,23 @@ function describeError(error: unknown): string {
   return String((error as Error)?.message ?? error);
 }
 
-/** NativeScript's HTTP module: sends an ArrayBuffer body as-is on both platforms. */
+/**
+ * Uploads go through postBinary (on Android NativeScript's HTTP module would
+ * copy each body into Java a byte at a time); the model list through
+ * NativeScript's HTTP module.
+ */
 const nativeHttp: WhisperHttp = async (request) => {
   // Required lazily so Node tests can load this module without NativeScript.
+  if (request.body) {
+    const { postBinary } = require("./binary-http") as typeof import("./binary-http");
+    return postBinary(request.url, request.body, request.headers, request.timeoutMs);
+  }
   const { withUserAgent } = require("../util/http") as typeof import("../util/http");
   const { request: send } = require("@nativescript/core/http") as typeof import("@nativescript/core/http");
   const response = await send({
     url: request.url,
     method: request.method,
     headers: withUserAgent(request.headers),
-    content: request.body,
     timeout: request.timeoutMs,
   });
   const content = response.content as any;

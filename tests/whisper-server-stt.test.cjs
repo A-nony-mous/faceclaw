@@ -141,6 +141,42 @@ test('continuous segments finalize in audio order even when answered out of orde
     [['first', true], ['second', true]]);
 });
 
+/** Seconds of audio in a transcription request's WAV part. */
+function postSeconds(post) {
+  const body = Buffer.from(post.body);
+  return body.readUInt32LE(body.indexOf('RIFF') + 40) / 32000;
+}
+
+test('nonstop speech is cut at its quietest moment into bounded requests that still leave as one final', async () => {
+  const h = client();
+  h.c.start(); await flush();
+  // 25 s of 50 ms chunks with no pause; chunk 440 (22 s in) is the quietest.
+  for (let i = 0; i < 500; i++) h.c.acceptPcm(speech(50, i === 440 ? 400 : 3000));
+  const [, head, tailInterim] = h.s.posts();
+  assert.equal(postSeconds(head), 22.05, 'the cut follows the quietest chunk');
+  assert.equal(postSeconds(tailInterim), 2.95, 'the audio after it carries over');
+  h.c.acceptPcm(speech(1000)); h.c.finish();
+  const tail = h.s.posts().at(-1);
+  assert.equal(postSeconds(tail), 3.95);
+  tail.resolve({ status: 200, text: '{"text":"and the rest."}' }); await flush();
+  assert.deepEqual(h.events.filter(event => event.isFinal), [], 'the tail waits for the head');
+  head.resolve({ status: 200, text: '{"text":"The long part"}' }); await flush();
+  assert.deepEqual(h.events.filter(event => event.isFinal),
+    [{ text: 'The long part and the rest.', isFinal: true, paragraphBreakAfter: false }]);
+});
+
+test('a cut with nothing after it yet ends at the next boundary', async () => {
+  const h = client();
+  h.c.start(); await flush();
+  for (let i = 0; i < 500; i++) h.c.acceptPcm(speech(50, i === 499 ? 400 : 3000));
+  const head = h.s.posts().at(-1);
+  assert.equal(postSeconds(head), 25);
+  head.resolve({ status: 200, text: '{"text":"All of it."}' }); await flush();
+  assert.deepEqual(h.events.filter(event => event.isFinal), []);
+  h.c.commitSegment();
+  assert.deepEqual(h.events.filter(event => event.isFinal), [{ text: 'All of it.', isFinal: true, paragraphBreakAfter: true }]);
+});
+
 test('a failed final is retried once, then reported without ending the capture', async () => {
   const h = client();
   h.c.start(); await flush();

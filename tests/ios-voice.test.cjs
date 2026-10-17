@@ -260,18 +260,67 @@ test('push-to-talk after Transcribe closed starts its own capture instead of joi
   assert.equal(h.clouds[1].continuous(), false);
 });
 
-test('a continuous capture asked to record writes every PCM chunk to its WAV and closes it when the capture ends', async () => {
+test('continuous captures record to the requested WAV, created by their first audio and kept across restarts', async () => {
   const h = harness();
-  const start = h.bridge.startGlassesCapture(h.session, h.cloud, () => {}, false, true, 'transcribe-2026-10-17-120000'); h.release(); await start;
-  assert.equal(h.recordings.length, 1);
-  assert.equal(h.recordings[0].name, 'transcribe-2026-10-17-120000');
+  h.bridge.recordTo('transcribe-2026-10-17-120000');
+  // A start that fails before any audio leaves no file behind.
+  h.native.error = 'No phone microphone is available.';
+  await h.bridge.startPhoneCapture(h.cloud, () => {}, false, true);
+  delete h.native.error;
+  const start = h.bridge.startGlassesCapture(h.session, h.cloud, () => {}, false, true); h.release(); await start;
+  assert.equal(h.recordings.length, 0);
   h.native.pcmHandler(new Uint8Array([1, 2, 3, 4]));
   h.native.pcmHandler(new Uint8Array([5, 6]));
-  assert.deepEqual(h.recordings[0].pcm, [1, 2, 3, 4, 5, 6]);
-  assert.deepEqual(h.clouds[0].pcm, [[1, 2, 3, 4], [5, 6]], 'transcription still gets the audio');
-  h.bridge.stop();
-  assert.equal(h.recordings[0].closed, true);
-  // Captures that don't ask (push-to-talk, Teleprompter) are not recorded.
-  const ptt = h.bridge.startGlassesCapture(h.session, h.cloud, () => {}); h.release(); await ptt;
   assert.equal(h.recordings.length, 1);
+  assert.equal(h.recordings[0].name, 'transcribe-2026-10-17-120000');
+  assert.deepEqual(h.recordings[0].pcm, [1, 2, 3, 4, 5, 6]);
+  assert.deepEqual(h.clouds.at(-1).pcm, [[1, 2, 3, 4], [5, 6]], 'transcription still gets the audio');
+  // A restarted capture (after a disconnect, say) keeps appending to the same file.
+  h.bridge.stop();
+  assert.equal(h.recordings[0].closed, false);
+  const again = h.bridge.startGlassesCapture(h.session, h.cloud, () => {}, false, true); h.release(); await again;
+  h.native.pcmHandler(new Uint8Array([7]));
+  assert.equal(h.recordings.length, 1);
+  assert.deepEqual(h.recordings[0].pcm, [1, 2, 3, 4, 5, 6, 7]);
+  // Push-to-talk on a capture of its own is not recorded.
+  h.bridge.stop();
+  const ptt = h.bridge.startGlassesCapture(h.session, h.cloud, () => {}); h.release(); await ptt;
+  h.native.pcmHandler(new Uint8Array([8]));
+  assert.deepEqual(h.recordings[0].pcm, [1, 2, 3, 4, 5, 6, 7]);
+  h.bridge.recordTo('');
+  assert.equal(h.recordings[0].closed, true);
+});
+
+test('a glasses session ending drains continuous capture instead of discarding what it heard', async () => {
+  const h = harness(); let ends = 0; h.bridge.onSpeechEnd(() => ends++);
+  const start = h.bridge.startGlassesCapture(h.session, h.cloud, () => {}, false, true); h.release(); await start;
+  const [cloud] = h.clouds;
+  assert.equal(h.bridge.continuousSource, 'glasses');
+  h.bridge.handleSessionEnded();
+  assert.deepEqual(h.commands, [true, false]); assert.equal(h.native.finished, true);
+  assert.equal(cloud.stopped, false, 'the open segment is still transcribed');
+  assert.equal(h.bridge.continuousSource, null); assert.equal(h.bridge.continuousActive, true);
+  // The controller reports the session state again while it reconnects.
+  h.bridge.handleSessionEnded();
+  h.event({ kind: 'ended', message: 'Ready to send' });
+  assert.equal(cloud.finished, 1);
+  assert.equal(ends, 0);
+  cloud.options.onTranscript({ text: 'Last words.', isFinal: true });
+  assert.equal(cloud.stopped, true); assert.equal(h.bridge.continuousActive, false);
+  assert.equal(h.text.at(-1).text, 'Last words.');
+  assert.match(h.bridge.statusText, /resumes when they reconnect/);
+  assert.equal(ends, 1, 'the end lets the controller restart the capture');
+});
+
+test('backgrounding drains a continuous phone capture', async () => {
+  const h = harness();
+  await h.bridge.startPhoneCapture(h.cloud, () => {}, false, true);
+  assert.equal(h.bridge.continuousSource, 'phone');
+  h.bridge.stopPhoneCapture();
+  assert.equal(h.native.finished, true); assert.equal(h.clouds[0].stopped, false);
+  h.event({ kind: 'ended', message: 'Ready to send' });
+  h.clouds[0].options.onTranscript({ text: 'Tail.', isFinal: true });
+  assert.equal(h.bridge.continuousActive, false);
+  assert.equal(h.text.at(-1).text, 'Tail.');
+  assert.match(h.bridge.statusText, /background/);
 });

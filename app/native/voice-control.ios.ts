@@ -15,7 +15,9 @@ const CLOUD_FINAL_TIMEOUT_MS = 5000
  * from the glasses when connected, or the default phone input in preview mode,
  * and is transcribed by Apple's on-device recognizer or a cloud provider.
  * Continuous capture (Transcribe, Teleprompter) needs a cloud provider: only
- * the PCM capture runs open-ended, and pauses commit its segments.
+ * the PCM capture runs open-ended, and pauses commit its segments. When the
+ * session or the app lifecycle cuts one short it is drained, not discarded;
+ * restarting it is the controller's call.
  */
 export class IosVoiceControlBridge {
   private native: any = null
@@ -42,7 +44,12 @@ export class IosVoiceControlBridge {
   // Open-ended capture: runs until stopContinuousCapture, and push-to-talk
   // joins it instead of restarting the mic (transcripts reach every listener).
   private continuous = false
-  // The capture's audio as a WAV in Downloads, while recordTo asked for one.
+  // Shown instead of the native "ended" status once a drain the bridge started completes.
+  private drainStatus: string | null = null
+  // Continuous captures' audio goes to Downloads/<recordingName>.wav while it is
+  // set. The file outlives a capture, so a restarted one keeps appending to it,
+  // and it is created by the first audio, so a failed start leaves no file.
+  private recordingName = ''
   private recorder: WavRecorder | null = null
 
   onStatus(listener: (state: VoiceControlState) => void): () => void {
@@ -61,7 +68,7 @@ export class IosVoiceControlBridge {
       this.native.pcmHandler = (pcm: NSData) => {
         const bytes = new Uint8Array(interop.bufferFromData(pcm))
         this.cloud?.acceptPcm(bytes)
-        this.recorder?.append(bytes)
+        if (this.continuous) this.record(bytes)
       }
     }
     return this.native
@@ -87,12 +94,11 @@ export class IosVoiceControlBridge {
     return true
   }
   get statusText(): string { return this.status }
-  async startGlassesCapture(session: IosMicrophoneSession, voice: VoiceProviderSelection, log: (message: string) => void, endpointing = false, continuous = false, recordTo = ''): Promise<void> {
+  async startGlassesCapture(session: IosMicrophoneSession, voice: VoiceProviderSelection, log: (message: string) => void, endpointing = false, continuous = false): Promise<void> {
     if (this.joinsContinuous(continuous)) return
     this.stop()
     const generation = ++this.generation
     this.continuous = continuous
-    this.startRecording(recordTo, log)
     this.log = log; this.source = 'glasses'; this.session = session; this.packets = 0; this.capturing = true
     this.completion = new Promise(resolve => { this.resolveCompletion = resolve })
     const startError = this.startNative(voice, endpointing, false)
@@ -117,11 +123,10 @@ export class IosVoiceControlBridge {
       this.stop(); this.setStatus(error instanceof Error ? error.message : String(error)); this.emitEnd()
     }
   }
-  async startPhoneCapture(voice: VoiceProviderSelection, log: (message: string) => void, endpointing = false, continuous = false, recordTo = ''): Promise<void> {
+  async startPhoneCapture(voice: VoiceProviderSelection, log: (message: string) => void, endpointing = false, continuous = false): Promise<void> {
     if (this.joinsContinuous(continuous)) return
     this.stop()
     this.continuous = continuous
-    this.startRecording(recordTo, log)
     this.log = log; this.source = 'phone'; this.capturing = true
     this.completion = new Promise(resolve => { this.resolveCompletion = resolve })
     const error = this.startNative(voice, endpointing, true)
@@ -147,11 +152,32 @@ export class IosVoiceControlBridge {
   }
   stopPhoneCapture(): void {
     if (this.source !== 'phone') return
+    if (this.continuous) { if (this.capturing) void this.finalizeCapture('Paused while Faceclaw is in the background.'); return }
     this.stop(); this.setStatus('Phone voice input stopped.'); this.emitEnd()
   }
   /** Whether continuous capture can run with this provider (Apple's recognizer can't). */
   supportsContinuous(voice: VoiceProviderSelection): boolean { return usesCloudStt(voice) }
   get continuousActive(): boolean { return this.continuous && (this.capturing || this.finalizing) }
+  /** Where a listening continuous capture gets its audio; null when none is listening. */
+  get continuousSource(): 'glasses' | 'phone' | null { return this.continuous && this.capturing ? this.source : null }
+  /**
+   * Record continuous captures' audio to Downloads/<name>.wav, across restarts,
+   * until called with another name or ''. Only cloud captures supply PCM.
+   */
+  recordTo(name: string): void {
+    if (name === this.recordingName) return
+    this.recorder?.close(); this.recorder = null
+    this.recordingName = name
+  }
+  private record(pcm: Uint8Array): void {
+    if (!this.recorder && this.recordingName) {
+      this.recorder = WavRecorder.open(this.recordingName)
+      this.log(this.recorder ? `Voice: recording audio to ${this.recorder.path}` : 'Voice: could not create the audio recording')
+      // One attempt per recording, not one per packet.
+      if (!this.recorder) this.recordingName = ''
+    }
+    this.recorder?.append(pcm)
+  }
   /** End continuous capture, transcribing the audio since the last pause. */
   stopContinuousCapture(): Promise<void> {
     if (!this.continuous) return Promise.resolve()
@@ -168,10 +194,11 @@ export class IosVoiceControlBridge {
     if (this.continuous) return Promise.resolve()
     return this.finalizeCapture()
   }
-  private finalizeCapture(): Promise<void> {
+  private finalizeCapture(status: string | null = null): Promise<void> {
     const completion = this.completion
     if (!this.capturing) return completion
     this.capturing = false; this.finalizing = true
+    this.drainStatus = status
     this.clearAudioTimer(); this.releaseMicrophone()
     this.setStatus('Recognizing…'); this.native?.finish()
     return completion
@@ -179,13 +206,20 @@ export class IosVoiceControlBridge {
   stop(): void {
     ++this.generation
     this.capturing = this.finalizing = this.continuous = false
-    this.source = null
+    this.source = null; this.drainStatus = null
     this.clearAudioTimer(); this.releaseMicrophone(); this.native?.cancel()
     this.clearCloud()
     this.finishCompletion()
   }
-  handleSessionEnded(message = 'Glasses disconnected. Start voice input again after reconnecting.'): void {
+  /**
+   * The glasses session went away (or the glasses locked). Push-to-talk ends
+   * with `message`; continuous capture transcribes what it already heard and
+   * shows `continuousMessage`.
+   */
+  handleSessionEnded(message = 'Glasses disconnected. Start voice input again after reconnecting.',
+    continuousMessage = 'Glasses disconnected. Transcription resumes when they reconnect.'): void {
     if (this.source !== 'glasses' || !this.capturing && !this.finalizing) return
+    if (this.continuous) { if (this.capturing) void this.finalizeCapture(continuousMessage); return }
     this.stop(); this.setStatus(message); this.emitEnd()
   }
   private clearAudioTimer(): void { if (this.audioTimer !== null) clearTimeout(this.audioTimer); this.audioTimer = null }
@@ -193,14 +227,7 @@ export class IosVoiceControlBridge {
     const session = this.session; this.session = null
     if (session) void session.setMicrophone(false).catch(error => this.log(`Voice microphone cleanup: ${error}`))
   }
-  /** Record this capture's audio as Downloads/<name>.wav (only cloud captures supply PCM). */
-  private startRecording(name: string, log: (message: string) => void): void {
-    if (!name) return
-    this.recorder = WavRecorder.open(name)
-    log(this.recorder ? `Voice: recording audio to ${this.recorder.path}` : 'Voice: could not create the audio recording')
-  }
   private clearCloud(): void {
-    this.recorder?.close(); this.recorder = null
     if (this.cloudTimer !== null) clearTimeout(this.cloudTimer)
     this.cloudTimer = null
     this.cloud?.stop(); this.cloud = null; this.cloudEndStatus = null
@@ -245,12 +272,13 @@ export class IosVoiceControlBridge {
     } else if (event.kind === 'finishing') {
       void this.stopPushToTalk(); this.emitEnd()
     } else if (event.kind === 'ended') {
-      this.source = null
+      const status = this.drainStatus ?? event.message ?? 'Ready to send'
+      this.source = null; this.drainStatus = null
       this.clearAudioTimer(); this.releaseMicrophone()
-      if (this.cloud) { this.finishCloud(event.message ?? 'Ready to send'); return }
+      if (this.cloud) { this.finishCloud(status); return }
       this.capturing = this.finalizing = false
       this.finishCompletion()
-      this.setStatus(event.message ?? 'Ready to send'); this.emitEnd()
+      this.setStatus(status); this.emitEnd()
     }
   }
 }

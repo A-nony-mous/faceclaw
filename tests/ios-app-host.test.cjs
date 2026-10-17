@@ -338,6 +338,81 @@ test('iOS preview voice uses the phone microphone, while connected capture stays
   assert.deepEqual(calls, []);
 });
 
+test('iOS continuous capture is shared by windows and restarts after a disconnect, a lock or backgrounding', async () => {
+  const calls = [], claims = [];
+  // Models the bridge's continuous state: listening on a source, or draining after a stop.
+  const bridge = { source: null, draining: false, recording: '',
+    supportsContinuous: voice => voice.provider !== 'onboard',
+    get continuousSource() { return this.source; },
+    get continuousActive() { return !!this.source || this.draining; },
+    prepare: async () => true,
+    startGlassesCapture: async (_session, _voice, _log, _endpointing, continuous) => { calls.push(['glasses', continuous]); bridge.source = 'glasses'; },
+    startPhoneCapture: async (_voice, _log, _endpointing, continuous) => { calls.push(['phone', continuous]); bridge.source = 'phone'; },
+    drain() { if (this.source) { this.source = null; this.draining = true; } },
+    stopContinuousCapture: async () => { calls.push(['stop']); bridge.drain(); },
+    handleSessionEnded() { if (bridge.source === 'glasses') bridge.drain(); },
+    stopPhoneCapture() { if (bridge.source === 'phone') bridge.drain(); },
+    recordTo: name => { bridge.recording = name; } };
+  const settings = { ...voiceSettings, voiceProviderSetting: { get: () => 'whisper-server' },
+    whisperServerUrlSetting: { get: () => 'http://whisper.local:8000' }, saveTranscribeAudioSetting: { get: () => true } };
+  const { IosPreviewController } = load('app/g2/ios-preview-controller.ts', {
+    require: id => id === '../native/ios-voice-input' ? { iosVoiceInput: bridge } : id === '../ui/dashboard-settings' ? settings
+      : id === '../ui/shell/voice-activity' ? { voiceActivity: { setActive: (active, holder) => claims.push([active, holder]) } } : {},
+  });
+  const host = Object.create(IosPreviewController.prototype);
+  Object.assign(host, { active: true, glassesLocked: false, communicator: {}, state: { phase: 'connected' }, sessionConnected: true,
+    continuousClients: new Map(), continuousPending: false, continuousCaptureToken: 0, displayReady: Promise.resolve(),
+    glance: { dismiss() {} }, onError: message => calls.push(['error', message]), logBluetooth() {}, fail() {}, requestShellRender() {},
+    syncRuntime() {}, flushBluetoothLog() {} });
+  const settle = () => new Promise(resolve => setImmediate(resolve));
+  // The bridge's end-of-capture callback, once a drain has finished.
+  const drained = () => { bridge.draining = false; host.syncContinuousCapture(); };
+  const session = phase => { host.state = { phase }; if (phase !== 'connected') bridge.handleSessionEnded(); host.syncContinuousSession(); };
+
+  host.startContinuousVoiceCapture('transcribe', 'transcribe-1'); await settle();
+  host.startContinuousVoiceCapture('calculator'); await settle();
+  assert.deepEqual(calls, [['glasses', true]], 'the second window shares the capture');
+  assert.equal(bridge.recording, 'transcribe-1');
+  assert.deepEqual(claims.at(-1), [true, 'continuous-capture']);
+  host.stopContinuousVoiceCapture('calculator');
+  assert.deepEqual(calls, [['glasses', true]], 'closing one window keeps the other listening');
+
+  // A reconnect drains the capture, waits for the glasses, and resumes on them.
+  calls.length = 0; session('retrying'); drained(); await settle();
+  assert.deepEqual(calls, []);
+  assert.deepEqual(claims.at(-1), [false, 'continuous-capture'], 'other mic users may run meanwhile');
+  session('connected'); await settle();
+  assert.deepEqual(calls, [['glasses', true]]);
+
+  // Locking drains; unlocking resumes.
+  calls.length = 0; host.setGlassesLocked(true); drained(); await settle();
+  assert.deepEqual(calls, []);
+  host.setGlassesLocked(false); await settle();
+  assert.deepEqual(calls, [['glasses', true]]);
+
+  // A failed capture is not retried in a loop, only on the next session.
+  calls.length = 0; bridge.source = null; drained(); await settle();
+  assert.deepEqual(calls, []);
+
+  // Without glasses the phone mic stands in while in the foreground, and moves to the glasses when they connect.
+  host.communicator = null; session('disconnected'); await settle();
+  assert.deepEqual(calls, [['phone', true]]);
+  calls.length = 0; host.pause(); drained(); await settle();
+  assert.deepEqual(calls, [], 'no phone capture in the background');
+  host.active = true; host.syncContinuousCapture(); await settle();
+  assert.deepEqual(calls, [['phone', true]]);
+  calls.length = 0; host.communicator = {}; session('connected'); await settle();
+  assert.deepEqual(calls, [['stop']]);
+  drained(); await settle();
+  assert.deepEqual(calls, [['stop'], ['glasses', true]]);
+
+  // The last window closing stops it for good.
+  calls.length = 0; host.stopContinuousVoiceCapture('transcribe'); drained(); session('retrying'); session('connected'); await settle();
+  assert.deepEqual(calls, [['stop']]);
+  assert.equal(bridge.recording, '');
+  assert.deepEqual(claims.at(-1), [false, 'continuous-capture']);
+});
+
 test('iOS keyboard action opens the shared destination session and remains blocked while locked', () => {
   let opened = 0;
   const { IosPreviewController } = load('app/g2/ios-preview-controller.ts', {

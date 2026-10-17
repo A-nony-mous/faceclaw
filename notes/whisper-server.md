@@ -6,7 +6,11 @@ any OpenAI-compatible Whisper server instead of a cloud service: vLLM, speaches
 `POST {url}/audio/transcriptions` with a 16 kHz mono WAV. Push-to-talk
 utterances are one request each; in Transcribe, each span ended by a pause is
 one request. While a span is open its audio so far is re-sent every 1.5 s, so
-text appears while you are still talking.
+text appears while you are still talking. A span that runs 25 s without a pause
+(nonstop speech, music) is cut at its quietest moment in the last 5 s, so no
+request outgrows Whisper's 30 s window; the pieces still arrive as one final.
+On Android the WAV goes out through `FaceclawBinaryPost` (okhttp), since
+NativeScript's http module copies a binary body into Java a byte at a time.
 
 ## Server
 
@@ -39,6 +43,11 @@ before building:
 ## Transcribe on iOS
 
 Transcribe needs a cloud or Whisper-server provider on iOS (Apple's recognizer
-only handles short utterances). With "Save Transcribe audio" on (Voice
+only handles short utterances). Its capture follows the glasses: a disconnect,
+a glasses lock or backgrounding (for phone-mic capture) transcribes what was
+already heard, and listening resumes once the glasses reconnect, unlock or the
+app returns to the foreground. Without a glasses session the phone mic stands in
+while Faceclaw is in the foreground. With "Save Transcribe audio" on (Voice
 settings), each session's audio is kept as `transcribe-<time>.wav` in Downloads,
-next to `transcript-<time>.txt` when the text is saved.
+next to `transcript-<time>.txt` when the text is saved; a resumed capture keeps
+appending to the same file.
