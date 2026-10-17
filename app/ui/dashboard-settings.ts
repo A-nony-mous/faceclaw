@@ -574,7 +574,7 @@ export const wakeToLastAppSetting = new ConfigSettingBoolean({
   id: "wake-to-last-app",
   label: "Wake into last app",
   storageKey: "display.wakeToLastApp",
-  defaultValue: true,
+  defaultValue: false,
   description: "Waking the display with a double tap returns to the app you were using. Off: wake into the app switcher.",
 });
 
