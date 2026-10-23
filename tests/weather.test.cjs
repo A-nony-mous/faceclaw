@@ -187,13 +187,17 @@ test('Weather tray icon follows the status-bar setting and hides a stale reading
   assert.equal(h.background.at(-1), true);
 
   h.setSetting('weather.showInStatusBar', true);
-  const current = { temperatureF: 71.6, condition: 'rain', isDaytime: true };
+  const current = { temperatureC: 22, temperatureF: 71.6, condition: 'rain', isDaytime: true };
   h.setState({ phase: 'ready', current, forecast: [], lastUpdatedMs: Date.now() });
   const [id, icon] = h.trays.at(-1);
   assert.equal(id, 'weather');
   assert.equal(icon.height, 24);
   assert.deepEqual(icon.draws.map(draw => draw[0]), ['image', 'text']);
-  assert.equal(icon.draws[1][3], '72°');
+  assert.equal(icon.draws[1][3], '22°', 'the status bar follows the Celsius default');
+
+  h.setState({ phase: 'ready', current, forecast: [], lastUpdatedMs: Date.now(), unit: 'fahrenheit' });
+  assert.equal(h.trays.at(-1)[1].draws[1][3], '72°', 'and switches with the unit setting');
+  h.setState({ phase: 'ready', current, forecast: [], lastUpdatedMs: Date.now(), unit: 'celsius' });
 
   // An unchanged reading does not rebuild the icon.
   const count = h.trays.length;

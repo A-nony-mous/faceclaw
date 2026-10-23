@@ -79,7 +79,7 @@ export function renderWeatherIcon(condition: WeatherCondition, isDaytime: boolea
 export type WeatherReading = {
   condition: WeatherCondition | null;
   isDaytime: boolean;
-  /** Rounded, unit-less ("72°"), to stay compact. */
+  /** Rounded, unit-less ("72°") in the state's display unit, to stay compact. */
   temperature: string;
 };
 
@@ -87,10 +87,11 @@ export type WeatherReading = {
 export function weatherReading(state: WeatherState, nowMs: number): WeatherReading | null {
   const current = state.current;
   if (!current || state.lastUpdatedMs === null || nowMs - state.lastUpdatedMs > INDICATOR_STALE_MS) return null;
+  const value = state.unit === "fahrenheit" ? current.temperatureF : current.temperatureC;
   return {
     condition: current.condition,
     isDaytime: current.isDaytime,
-    temperature: current.temperatureF === null ? "--°" : `${Math.round(current.temperatureF)}°`,
+    temperature: value === null || !Number.isFinite(value) ? "--°" : `${Math.round(value)}°`,
   };
 }
 
