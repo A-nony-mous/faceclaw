@@ -148,6 +148,28 @@ The Weather app will retrieve the user's coarse location, and will use it to
 query a third-party weather information provider.
 
 
+## Weather
+
+The Weather app can fetch its data from either of two providers; which one
+receives the user's coarse location depends on the source selected in the
+Weather settings. Faceclaw sends the location only to the selected source,
+and only when it fetches weather data.
+
+Open-Meteo (the default) requires no account or API key; each request
+carries the approximate coordinates to look up. Open-Meteo's terms, which
+include its privacy policy, state that server logs may contain requested
+coordinates for troubleshooting, that this data is not shared with any
+third party, and that all log files are deleted after 90 days:
+
+  Open-Meteo: https://open-meteo.com/en/terms
+
+The National Weather Service (US only), which the Weather app used before
+Open-Meteo was added, receives the same approximate coordinates. It is a
+US government service whose data is in the public domain:
+
+  NWS: https://www.weather.gov/privacy
+
+
 ## EvenHub
 
 The EvenHub app store is subject to Even Realities' privacy policy:

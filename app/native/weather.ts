@@ -1,132 +1,58 @@
 import { hasLocationPermission } from "./location-permissions";
-import { getCurrentLocation, type CurrentLocation } from "./location";
-import { getStringSetting, setStringSetting } from "./settings-store";
-import { fetchWithUserAgent } from "../util/http";
-import { USER_AGENT } from "../version";
+import { getCurrentLocation } from "./location";
+import {
+  type CurrentWeather,
+  type ForecastPeriod,
+  type TemperatureUnit,
+  type WeatherState,
+} from "./weather-types";
+import {
+  DEFAULT_WEATHER_PROVIDER_ID,
+  getWeatherProvider,
+} from "./weather-providers";
+import {
+  getStringSetting,
+  onSettingsStoreChanged,
+  setStringSetting,
+} from "./settings-store";
 
-export type WeatherPhase = "permission-required" | "locating" | "loading" | "ready" | "error";
+export * from "./weather-types";
+export * from "./weather-units";
+export * from "./weather-providers";
 
-/** Sky and precipitation state, as coarse as the icons that show it. */
-export type WeatherCondition =
-  | "clear"
-  | "partly-cloudy"
-  | "cloudy"
-  | "fog"
-  | "wind"
-  | "drizzle"
-  | "showers"
-  | "rain"
-  | "thunderstorm"
-  | "snow"
-  | "sleet";
-
-export type CurrentWeather = {
-  temperatureF: number | null;
-  description: string;
-  humidityPercent: number | null;
-  windSpeedMph: number | null;
-  windDirection: string;
-  timestampMs: number | null;
-  observed: boolean;
-  condition: WeatherCondition | null;
-  isDaytime: boolean;
-};
-
-export type ForecastPeriod = {
-  name: string;
-  startTimeMs: number;
-  temperatureF: number | null;
-  shortForecast: string;
-  detailedForecast: string;
-  precipitationPercent: number | null;
-  windSpeed: string;
-  windDirection: string;
-  isDaytime: boolean;
-  condition: WeatherCondition | null;
-};
-
-export type WeatherState = {
-  phase: WeatherPhase;
-  status: string;
-  locationName: string;
-  current: CurrentWeather | null;
-  forecast: ForecastPeriod[];
-  lastUpdatedMs: number | null;
-};
-
-type NwsPointResponse = {
-  properties?: {
-    forecast?: unknown;
-    forecastHourly?: unknown;
-    observationStations?: unknown;
-    relativeLocation?: {
-      properties?: { city?: unknown; state?: unknown };
-    };
-  };
-};
-
-type NwsForecastResponse = {
-  properties?: {
-    periods?: NwsForecastPeriodResponse[];
-  };
-};
-
-type NwsForecastPeriodResponse = {
-  name?: unknown;
-  startTime?: unknown;
-  temperature?: unknown;
-  temperatureUnit?: unknown;
-  shortForecast?: unknown;
-  detailedForecast?: unknown;
-  probabilityOfPrecipitation?: { value?: unknown };
-  windSpeed?: unknown;
-  windDirection?: unknown;
-  isDaytime?: unknown;
-  icon?: unknown;
-};
-
-type NwsStationsResponse = {
-  features?: Array<{ id?: unknown }>;
-};
-
-type NwsObservationResponse = {
-  properties?: {
-    timestamp?: unknown;
-    textDescription?: unknown;
-    icon?: unknown;
-    temperature?: NwsMeasure;
-    relativeHumidity?: NwsMeasure;
-    windSpeed?: NwsMeasure;
-    windDirection?: NwsMeasure;
-  };
-};
-
-type NwsMeasure = {
-  value?: unknown;
-  unitCode?: unknown;
-};
-
-const NWS_API_ROOT = "https://api.weather.gov";
-const NWS_HEADERS = {
-  Accept: "application/geo+json",
-  // NWS asks callers to identify themselves with a contact address.
-  "User-Agent": `${USER_AGENT} (https://github.com/jimrandomh/faceclaw)`,
-};
 /** Refresh period while the Weather app is open. */
 const APP_REFRESH_MS = 30 * 60 * 1000;
 /** Refresh period for the status-bar and system-card indicators. */
 const BACKGROUND_REFRESH_MS = 60 * 60 * 1000;
 /** Delay before retrying after a failed refresh (capped at the period). */
 const RETRY_AFTER_FAILURE_MS = 10 * 60 * 1000;
-const FETCH_TIMEOUT_MS = 20_000;
-const MAX_FORECAST_PERIODS = 14;
 /** Settings-store key holding the last successful refresh. */
 const CACHE_KEY = "weather.cache";
 const CACHE_VERSION = 1;
 
+export const WEATHER_PROVIDER_KEY = "weather.provider";
+export const WEATHER_UNIT_KEY = "weather.unit";
+
+export function getWeatherUnitSetting(): TemperatureUnit {
+  const raw = getStringSetting(WEATHER_UNIT_KEY, "celsius");
+  return raw === "fahrenheit" ? "fahrenheit" : "celsius";
+}
+
+export function setWeatherUnitSetting(unit: TemperatureUnit): void {
+  setStringSetting(WEATHER_UNIT_KEY, unit);
+}
+
+export function getWeatherProviderSetting(): string {
+  return getStringSetting(WEATHER_PROVIDER_KEY, DEFAULT_WEATHER_PROVIDER_ID);
+}
+
+export function setWeatherProviderSetting(providerId: string): void {
+  setStringSetting(WEATHER_PROVIDER_KEY, providerId);
+}
+
 const DEFAULT_STATE: WeatherState = {
   phase: "permission-required",
-  status: "Location permission is required for local weather.",
+  status: "Location permission is required to get local weather.",
   locationName: "",
   current: null,
   forecast: [],
@@ -139,6 +65,8 @@ type WeatherCache = {
   current: CurrentWeather | null;
   forecast: ForecastPeriod[];
   lastUpdatedMs: number;
+  providerId?: string;
+  unit?: TemperatureUnit;
 };
 
 /**
@@ -158,6 +86,16 @@ export class WeatherBridge {
   private appOpen = false;
   private sessionActive = false;
   private backgroundWanted = false;
+  private settingsListenerCleanup: (() => void) | null = null;
+
+  constructor() {
+    this.settingsListenerCleanup = onSettingsStoreChanged((key) => {
+      if (key === WEATHER_PROVIDER_KEY || key === WEATHER_UNIT_KEY) {
+        // Refresh as soon as the provider or unit changes.
+        void this.refreshNow();
+      }
+    });
+  }
 
   onStateChange(listener: (state: WeatherState) => void): () => void {
     this.listeners.add(listener);
@@ -262,16 +200,27 @@ export class WeatherBridge {
       this.emit();
       const location = await getCurrentLocation();
 
-      this.state = { ...this.state, phase: "loading", status: "Loading National Weather Service data..." };
+      const providerId = getWeatherProviderSetting();
+      const provider = getWeatherProvider(providerId);
+      const unit = getWeatherUnitSetting();
+
+      this.state = {
+        ...this.state,
+        phase: "loading",
+        status: `Fetching weather from ${provider.name}...`,
+      };
       this.emit();
-      const weather = await loadNwsWeather(location);
+
+      const weather = await provider.fetchWeather(location, { unit });
       this.state = {
         phase: "ready",
-        status: "Weather updated.",
+        status: "Weather updated",
         locationName: weather.locationName,
         current: weather.current,
         forecast: weather.forecast,
         lastUpdatedMs: Date.now(),
+        providerId: provider.id,
+        unit,
       };
       saveCachedState(this.state);
       this.emit();
@@ -315,6 +264,8 @@ function loadCachedState(): WeatherState {
       current: cache.current && typeof cache.current === "object" ? cache.current : null,
       forecast: cache.forecast,
       lastUpdatedMs: cache.lastUpdatedMs,
+      providerId: typeof cache.providerId === "string" ? cache.providerId : undefined,
+      unit: cache.unit,
     });
   } catch (error) {
     console.warn(`weather cache unreadable: ${error}`);
@@ -330,6 +281,8 @@ function saveCachedState(state: WeatherState): void {
     current: state.current,
     forecast: state.forecast,
     lastUpdatedMs: state.lastUpdatedMs,
+    providerId: state.providerId,
+    unit: state.unit,
   };
   try {
     setStringSetting(CACHE_KEY, JSON.stringify(cache));
@@ -337,266 +290,22 @@ function saveCachedState(state: WeatherState): void {
     console.warn(`weather cache write failed: ${error}`);
   }
 }
-
-async function loadNwsWeather(location: CurrentLocation): Promise<{
-  locationName: string;
-  current: CurrentWeather;
-  forecast: ForecastPeriod[];
-}> {
-  // NWS recommends no more than four decimals for its point lookup.
-  const latitude = location.latitude.toFixed(4);
-  const longitude = location.longitude.toFixed(4);
-  const point = await fetchNwsJson<NwsPointResponse>(`${NWS_API_ROOT}/points/${latitude},${longitude}`);
-  const properties = point.properties;
-  const forecastUrl = stringValue(properties?.forecast);
-  const hourlyUrl = stringValue(properties?.forecastHourly);
-  const stationsUrl = stringValue(properties?.observationStations);
-  if (!forecastUrl) throw new Error("NWS did not provide a forecast for this location.");
-
-  const [forecastResponse, hourlyResponse, observation] = await Promise.all([
-    fetchNwsJson<NwsForecastResponse>(forecastUrl),
-    hourlyUrl ? fetchNwsJson<NwsForecastResponse>(hourlyUrl).catch(() => null) : Promise.resolve(null),
-    stationsUrl ? loadLatestObservation(stationsUrl).catch(() => null) : Promise.resolve(null),
-  ]);
-  const forecast = (forecastResponse.properties?.periods ?? [])
-    .map(normalizeForecastPeriod)
-    .filter((period): period is ForecastPeriod => period !== null)
-    .slice(0, MAX_FORECAST_PERIODS);
-  if (!forecast.length) throw new Error("NWS returned an empty forecast.");
-
-  const hourly = (hourlyResponse?.properties?.periods ?? [])
-    .map(normalizeForecastPeriod)
-    .find((period): period is ForecastPeriod => period !== null);
-
-  return {
-    locationName: pointLocationName(point, latitude, longitude),
-    current: observation ? normalizeObservation(observation, hourly) : currentFromHourly(hourly, forecast[0]!),
-    forecast,
-  };
-}
-
-async function loadLatestObservation(stationsUrl: string): Promise<NwsObservationResponse | null> {
-  const stations = await fetchNwsJson<NwsStationsResponse>(stationsUrl);
-  const stationUrl = stringValue(stations.features?.[0]?.id);
-  if (!stationUrl) return null;
-  return fetchNwsJson<NwsObservationResponse>(`${stationUrl}/observations/latest`);
-}
-
-async function fetchNwsJson<T>(url: string): Promise<T> {
-  const request = fetchWithUserAgent(url, { headers: NWS_HEADERS });
-  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
-  const timeout = new Promise<never>((_resolve, reject) => {
-    timeoutHandle = setTimeout(() => reject(new Error("Weather request timed out.")), FETCH_TIMEOUT_MS);
-  });
-  try {
-    const response = await Promise.race([request, timeout]);
-    if (!response.ok) {
-      if (response.status === 404 && url.includes("/points/")) {
-        throw new Error("This location is outside National Weather Service coverage.");
-      }
-      throw new Error(`National Weather Service request failed (HTTP ${response.status}).`);
-    }
-    return (await response.json()) as T;
-  } finally {
-    if (timeoutHandle) clearTimeout(timeoutHandle);
-  }
-}
-
-function normalizeObservation(
-  response: NwsObservationResponse,
-  hourly: ForecastPeriod | undefined,
-): CurrentWeather {
-  const properties = response.properties;
-  const temperatureF = convertTemperatureToF(properties?.temperature);
-  const windSpeedMph = convertSpeedToMph(properties?.windSpeed);
-  const windDegrees = finiteNumber(properties?.windDirection?.value);
-  const textDescription = stringValue(properties?.textDescription);
-  const icon = parseNwsIcon(properties?.icon);
-  return {
-    temperatureF: temperatureF ?? hourly?.temperatureF ?? null,
-    description: textDescription || hourly?.shortForecast || "Current conditions",
-    humidityPercent: finiteNumber(properties?.relativeHumidity?.value),
-    windSpeedMph,
-    windDirection: windDegrees === null ? hourly?.windDirection ?? "" : degreesToCompass(windDegrees),
-    timestampMs: timestampValue(properties?.timestamp),
-    observed: true,
-    condition: icon.condition ?? conditionFromText(textDescription) ?? hourly?.condition ?? null,
-    isDaytime: icon.isDaytime ?? hourly?.isDaytime ?? isLocalDaytime(),
-  };
-}
-
-function currentFromHourly(hourly: ForecastPeriod | undefined, fallback: ForecastPeriod): CurrentWeather {
-  const source = hourly ?? fallback;
-  return {
-    temperatureF: source.temperatureF,
-    description: source.shortForecast || "Current forecast",
-    humidityPercent: null,
-    windSpeedMph: firstNumberInText(source.windSpeed),
-    windDirection: source.windDirection,
-    timestampMs: source.startTimeMs || null,
-    observed: false,
-    condition: source.condition,
-    isDaytime: source.isDaytime,
-  };
-}
-
-function normalizeForecastPeriod(value: NwsForecastPeriodResponse): ForecastPeriod | null {
-  if (!value || typeof value !== "object") return null;
-  const name = stringValue(value.name);
-  const temperature = finiteNumber(value.temperature);
-  const unit = stringValue(value.temperatureUnit).toUpperCase();
-  const shortForecast = stringValue(value.shortForecast);
-  const icon = parseNwsIcon(value.icon);
-  return {
-    name: name || "Forecast",
-    startTimeMs: timestampValue(value.startTime) ?? 0,
-    temperatureF: temperature === null ? null : unit === "C" ? temperature * 9 / 5 + 32 : temperature,
-    shortForecast,
-    detailedForecast: stringValue(value.detailedForecast),
-    precipitationPercent: finiteNumber(value.probabilityOfPrecipitation?.value),
-    windSpeed: stringValue(value.windSpeed),
-    windDirection: stringValue(value.windDirection),
-    isDaytime: icon.isDaytime ?? Boolean(value.isDaytime),
-    condition: icon.condition ?? conditionFromText(shortForecast),
-  };
-}
-
-// NWS icon codes (https://api.weather.gov/icons) by the condition they show.
-const NWS_ICON_CONDITIONS: Record<string, WeatherCondition> = {
-  skc: "clear",
-  hot: "clear",
-  cold: "clear",
-  few: "partly-cloudy",
-  sct: "partly-cloudy",
-  bkn: "cloudy",
-  ovc: "cloudy",
-  wind_skc: "wind",
-  wind_few: "wind",
-  wind_sct: "wind",
-  wind_bkn: "wind",
-  wind_ovc: "wind",
-  fog: "fog",
-  haze: "fog",
-  smoke: "fog",
-  dust: "fog",
-  rain: "rain",
-  rain_showers: "rain",
-  rain_showers_hi: "showers",
-  tsra: "thunderstorm",
-  tsra_sct: "thunderstorm",
-  tsra_hi: "thunderstorm",
-  tornado: "thunderstorm",
-  hurricane: "thunderstorm",
-  tropical_storm: "thunderstorm",
-  snow: "snow",
-  blizzard: "snow",
-  sleet: "sleet",
-  fzra: "sleet",
-  rain_fzra: "sleet",
-  snow_fzra: "sleet",
-  rain_sleet: "sleet",
-  snow_sleet: "sleet",
-  rain_snow: "sleet",
-};
-
-/**
- * Condition and day/night from an NWS icon URL such as
- * ".../icons/land/day/tsra_sct,40/rain,20?size=medium". A period that
- * changes partway lists two codes; the first is the one in effect now.
- */
-function parseNwsIcon(value: unknown): { condition: WeatherCondition | null; isDaytime: boolean | null } {
-  const match = stringValue(value).match(/\/icons\/[^/]+\/(day|night)\/([a-z_]+)/);
-  if (!match) return { condition: null, isDaytime: null };
-  return { condition: NWS_ICON_CONDITIONS[match[2]!] ?? null, isDaytime: match[1] === "day" };
-}
-
-/** Condition from an NWS text description ("Chance Rain Showers"), for when there is no icon. */
-function conditionFromText(text: string): WeatherCondition | null {
-  const lower = text.toLowerCase();
-  if (/thunder|t-storm|tstorm/.test(lower)) return "thunderstorm";
-  if (/freezing|sleet|ice pellets|wintry|hail|rain and snow|snow and rain/.test(lower)) return "sleet";
-  if (/snow|flurr|blizzard/.test(lower)) return "snow";
-  if (/drizzle/.test(lower)) return "drizzle";
-  if (/rain|showers/.test(lower)) return /chance|slight|scattered|isolated|patchy/.test(lower) ? "showers" : "rain";
-  if (/fog|haze|smoke|dust|mist/.test(lower)) return "fog";
-  if (/windy|breezy|blustery/.test(lower)) return "wind";
-  if (/partly|few clouds|mostly sunny|mostly clear/.test(lower)) return "partly-cloudy";
-  if (/cloud|overcast/.test(lower)) return "cloudy";
-  if (/sunny|clear|fair/.test(lower)) return "clear";
-  return null;
-}
-
-/** Rough day/night by the phone's clock, for when NWS gives no hint. */
-function isLocalDaytime(): boolean {
-  const hour = new Date().getHours();
-  return hour >= 6 && hour < 18;
-}
-
-function convertTemperatureToF(measure: NwsMeasure | undefined): number | null {
-  const value = finiteNumber(measure?.value);
-  if (value === null) return null;
-  const unit = stringValue(measure?.unitCode).toLowerCase();
-  if (unit.includes("degc")) return value * 9 / 5 + 32;
-  return value;
-}
-
-function convertSpeedToMph(measure: NwsMeasure | undefined): number | null {
-  const value = finiteNumber(measure?.value);
-  if (value === null) return null;
-  const unit = stringValue(measure?.unitCode).toLowerCase();
-  if (unit.includes("km_h")) return value * 0.621371;
-  if (unit.includes("m_s")) return value * 2.23694;
-  return value;
-}
-
-function pointLocationName(point: NwsPointResponse, latitude: string, longitude: string): string {
-  const relative = point.properties?.relativeLocation?.properties;
-  const city = stringValue(relative?.city);
-  const state = stringValue(relative?.state);
-  return [city, state].filter(Boolean).join(", ") || `${latitude}, ${longitude}`;
-}
-
-function degreesToCompass(value: number): string {
-  const directions = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
-  return directions[Math.round((((value % 360) + 360) % 360) / 45) % directions.length]!;
-}
-
-function firstNumberInText(value: string): number | null {
-  const match = value.match(/\d+(?:\.\d+)?/);
-  return match ? Number(match[0]) : null;
-}
-
-function finiteNumber(value: unknown): number | null {
-  if (value === null || value === undefined || typeof value === "boolean") return null;
-  if (typeof value === "string" && !value.trim()) return null;
-  const number = typeof value === "number" ? value : Number(value);
-  return Number.isFinite(number) ? number : null;
-}
-
-function timestampValue(value: unknown): number | null {
-  if (typeof value !== "string") return null;
-  const timestamp = Date.parse(value);
-  return Number.isFinite(timestamp) ? timestamp : null;
-}
-
-function stringValue(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
 function friendlyWeatherError(error: unknown): string {
-  const message = (error as Error)?.message || String(error);
-  if (/network request failed|failed to fetch|unable to resolve host/i.test(message)) {
-    return "Couldn't reach the National Weather Service. Check the phone's connection and retry.";
+  const text = error instanceof Error ? error.message : String(error);
+  if (text.includes("timed out")) return "Weather request timed out. Check your network and try again.";
+  if (text.includes("outside National Weather Service coverage")) {
+    return "This location is outside NWS coverage. Switch to Open-Meteo in the Weather settings.";
   }
-  return message;
+  return text || "Failed to fetch weather data.";
 }
 
 function cloneState(state: WeatherState): WeatherState {
   return {
     ...state,
     current: state.current ? { ...state.current } : null,
-    forecast: state.forecast.map((period) => ({ ...period })),
+    forecast: state.forecast.map((p) => ({ ...p })),
   };
 }
 
 export const weatherBridge = new WeatherBridge();
+

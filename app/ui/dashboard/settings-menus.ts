@@ -88,6 +88,8 @@ import {
   watchCrownClockwiseNextSetting,
   watchMirrorAssistantSetting,
   watchRemoteEnabledSetting,
+  weatherProviderSetting,
+  weatherUnitSetting,
 } from "../dashboard-settings";
 import { wearBridge } from "../../native/wear-bridge";
 import { openSettingsSubMenu, SettingsPanelLayer, type SettingsSection } from "./settings-panel";
@@ -166,6 +168,13 @@ function settingsSections(): SettingsSection[] {
         textSettingMenuItem(sonioxApiKeySetting),
         textSettingMenuItem(anthropicApiKeySetting),
         textSettingMenuItem(mapboxApiKeySetting),
+      ],
+    },
+    {
+      label: "Weather",
+      items: [
+        enumSettingMenuItem(weatherProviderSetting),
+        enumSettingMenuItem(weatherUnitSetting),
       ],
     },
     {

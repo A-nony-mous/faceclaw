@@ -19,7 +19,8 @@ exports.loader = (globals = {}, mocks = {}) => {
       require(name) {
         if (name in mocks) return mocks[name];
         if (!name.startsWith('.')) throw new Error(`Unmocked module: ${name}`);
-        return load(path.resolve(path.dirname(file), name + '.ts'));
+        const base = path.resolve(path.dirname(file), name);
+        return load(fs.existsSync(base + '.ts') ? base + '.ts' : path.join(base, 'index.ts'));
       },
     }, { filename: file });
     return output;

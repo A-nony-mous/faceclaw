@@ -98,7 +98,8 @@ test('Weather uses the portable location provider and preserves NWS parsing', as
     './settings-store': { getStringSetting: (_key, fallback) => fallback, setStringSetting() {} },
     './location': { getCurrentLocation: async () => fix },
     '../version': { USER_AGENT: 'test' },
-    '../util/http': { fetchWithUserAgent: async url => { requests.push(url); return { ok: true, json: async () =>
+    './settings-store': { getStringSetting: (key, fallback) => key === 'weather.provider' ? 'nws' : (fallback ?? ''), setStringSetting: () => {}, onSettingsStoreChanged: () => () => {} },
+    '../../util/http': { fetchWithUserAgent: async url => { requests.push(url); return { ok: true, json: async () =>
       url.includes('/points/') ? { properties: { forecast: 'https://fixture/forecast', relativeLocation: { properties: { city: 'San Francisco', state: 'CA' } } } }
         : { properties: { periods: [period] } } }; } },
   })('app/native/weather.ts');

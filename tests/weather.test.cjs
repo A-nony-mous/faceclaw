@@ -6,18 +6,10 @@ const HOUR_MS = 60 * 60 * 1000;
 const fix = { latitude: 37.7, longitude: -122.4, accuracyMeters: 8, timestampMs: 1234 };
 
 /** weather.ts with fake timers, settings store and NWS responses. */
-function weatherHarness({ periods, observation = null, store = new Map(), permission = () => true }) {
+function weatherHarness({ periods, observation = null, store = new Map([['weather.provider', 'nws']]), permission = () => true }) {
   const timers = new Map(), requests = [];
   let nextTimer = 1;
-  const api = loader({
-    setTimeout: (fn, ms) => { const id = nextTimer++; timers.set(id, { fn: () => { timers.delete(id); fn(); }, ms }); return id; },
-    clearTimeout: id => timers.delete(id),
-  }, {
-    './location-permissions': { hasLocationPermission: permission },
-    './location': { getCurrentLocation: async () => fix },
-    './settings-store': { getStringSetting: (key, fallback) => store.get(key) ?? fallback, setStringSetting: (key, value) => store.set(key, value) },
-    '../version': { USER_AGENT: 'test' },
-    '../util/http': { fetchWithUserAgent: async url => {
+  const fetchMock = { fetchWithUserAgent: async url => {
       requests.push(url);
       let body;
       if (url.includes('/points/')) {
@@ -34,7 +26,18 @@ function weatherHarness({ periods, observation = null, store = new Map(), permis
         body = { properties: { periods } };
       }
       return { ok: true, json: async () => body };
-    } },
+  } };
+
+  const api = loader({
+    setTimeout: (fn, ms) => { const id = nextTimer++; timers.set(id, { fn: () => { timers.delete(id); fn(); }, ms }); return id; },
+    clearTimeout: id => timers.delete(id),
+  }, {
+    './location-permissions': { hasLocationPermission: permission },
+    './location': { getCurrentLocation: async () => fix },
+    './settings-store': { getStringSetting: (key, fallback) => store.get(key) ?? fallback, setStringSetting: (key, value) => store.set(key, value), onSettingsStoreChanged: () => () => {} },
+    '../version': { USER_AGENT: 'test' },
+    '../util/http': fetchMock,
+    '../../util/http': fetchMock,
   })('app/native/weather.ts');
   // Only the bridge's refresh timer outlives a refresh (fetch timeouts are cleared).
   const refreshTimer = () => {
@@ -105,7 +108,7 @@ test('Weather restores its cache on restart and refreshes hourly only during a s
 });
 
 test('Weather refreshes a stale cache at once and backs off after a failure', async () => {
-  const store = new Map([['weather.cache', JSON.stringify({
+  const store = new Map([['weather.provider', 'nws'], ['weather.cache', JSON.stringify({
     version: 1, locationName: 'Old', current: null, forecast: [], lastUpdatedMs: Date.now() - 2 * HOUR_MS,
   })]]);
   let permission = true;

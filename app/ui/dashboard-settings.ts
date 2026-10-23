@@ -1579,3 +1579,36 @@ export class EditTextSettingLayer implements Layer {
     }
   }
 }
+
+// --- Weather Settings ---
+
+export const weatherProviderSetting = new ConfigSettingEnum({
+  id: "weather-provider",
+  label: "Weather provider",
+  storageKey: "weather.provider",
+  defaultValue: "open-meteo",
+  values: ["open-meteo", "nws"],
+  formatValue: (value) => {
+    switch (value) {
+      case "open-meteo":
+        return "Open-Meteo (Worldwide)";
+      case "nws":
+        return "NWS (US Only)";
+      default:
+        return value;
+    }
+  },
+  description:
+    "Weather data source. Open-Meteo works worldwide with no account; the National Weather Service only covers the United States.",
+});
+
+export const weatherUnitSetting = new ConfigSettingEnum({
+  id: "weather-unit",
+  label: "Temperature unit",
+  storageKey: "weather.unit",
+  defaultValue: "celsius",
+  values: ["celsius", "fahrenheit"],
+  formatValue: (value) => (value === "celsius" ? "Celsius (°C)" : "Fahrenheit (°F)"),
+  description: "Temperature display unit: Celsius (°C) or Fahrenheit (°F).",
+});
+
