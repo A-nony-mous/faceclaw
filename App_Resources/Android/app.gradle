@@ -111,7 +111,12 @@ tasks.register("prepareFaceclawNativeLibs") {
     if (ndkRoot == null || !ndkRoot.exists()) {
       throw new GradleException("Android NDK is required to build libfaceclaw_lc3.so")
     }
-    def clang = file("$ndkRoot/toolchains/llvm/prebuilt/${faceclawNdkHostTag()}/bin/aarch64-linux-android24-clang")
+    // The NDK ships the clang driver twice: extensionless (a Unix shell script)
+    // and as .cmd (the CreateProcess-launchable one Windows needs).
+    def clangBin = "$ndkRoot/toolchains/llvm/prebuilt/${faceclawNdkHostTag()}/bin/aarch64-linux-android24-clang"
+    def clang = Os.isFamily(Os.FAMILY_WINDOWS)
+      ? file("${clangBin}.cmd")
+      : file(clangBin)
     if (!clang.exists()) {
       throw new GradleException("Could not find Android clang at $clang")
     }
@@ -229,7 +234,11 @@ tasks.register("prepareFaceclawLlama") {
     // strip it so the APK only pays for the code (~8MB).
     def ndkRootForStrip = faceclawFindNdkRoot()
     if (ndkRootForStrip != null) {
-      def llvmStrip = file("$ndkRootForStrip/toolchains/llvm/prebuilt/${faceclawNdkHostTag()}/bin/llvm-strip")
+      // Windows wants llvm-strip.exe; the extensionless file is a Unix script.
+      def llvmStripBin = "$ndkRootForStrip/toolchains/llvm/prebuilt/${faceclawNdkHostTag()}/bin/llvm-strip"
+      def llvmStrip = Os.isFamily(Os.FAMILY_WINDOWS) && file("${llvmStripBin}.exe").exists()
+        ? file("${llvmStripBin}.exe")
+        : file(llvmStripBin)
       if (llvmStrip.exists()) {
         exec {
           commandLine([llvmStrip.absolutePath, "--strip-unneeded", llamaSo.absolutePath])
