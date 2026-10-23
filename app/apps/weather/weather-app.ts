@@ -14,7 +14,7 @@ import {
 export const WEATHER_WINDOW_ID = "weather";
 export const WEATHER_SURFACE_ID = "window:weather";
 
-/** Local current conditions and forecast from the National Weather Service. */
+/** Local current conditions and forecast from the National Weather Service, or Open-Meteo outside the US. */
 export function createWeatherAppWindow(options: InProcessAppOptions): InProcessWindow {
   let closed = false;
   let requestingPermission = false;

@@ -2,6 +2,10 @@
 
 ## 0.8.5 - Future
 
+### Features
+
+* Use Open-Meteo for weather in regions that the US National Weather Service doesn't cover
+
 ### Bug fixes
 
 * Inverting Android notification-icons to indicate selectionis now gamma-correct

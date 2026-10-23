@@ -1,7 +1,7 @@
 import { getDefaultLargeFont, getDefaultMediumFont, getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { GrayImage, type UiFont } from "../../graphics/image";
 import { wrapText, truncateText } from "../../graphics/textwrap";
-import { type ForecastPeriod, type WeatherState } from "../../native/weather";
+import { WEATHER_SOURCE_NAMES, type ForecastPeriod, type WeatherState } from "../../native/weather";
 import { GESTURE_CLICK, type InputEvent } from "../../ui/gestures";
 import { type Layer, type LayerContext } from "../../ui/layers";
 import { Menu, type MenuDrawArgs } from "../../ui/menu-core";
@@ -145,7 +145,9 @@ export class WeatherLayer implements Layer {
     }
     image.drawText(small, textX, cy, details.join("   ") || "Current forecast", 170);
     cy += lineStep(small);
-    const source = current.observed ? "Observed" : "Forecast";
+    // Naming the source also credits Open-Meteo, as its CC BY licence asks.
+    const sourceName = weather.source ? `${WEATHER_SOURCE_NAMES[weather.source]} ` : "";
+    const source = `${sourceName}${current.observed ? "observed" : "forecast"}`;
     const age = current.timestampMs ? formatAge(Date.now() - current.timestampMs) : "";
     const updating = weather.phase === "locating" || weather.phase === "loading" ? " · updating" : "";
     image.drawText(small, textX, cy, `${source}${age ? ` ${age}` : ""}${updating}`, 105);

@@ -145,7 +145,12 @@ transmitted to Mapbox, and are subject to Mapbox's privacy policy.
   Mapbox: https://www.mapbox.com/legal/privacy
 
 The Weather app will retrieve the user's coarse location, and will use it to
-query a third-party weather information provider.
+query a third-party weather information provider: the US National Weather
+Service, then Open-Meteo if the location is outside the US. Outside the US, it
+also asks the phone's built-in geocoder (Google's on most Android phones,
+Apple's on iOS) for the name of the place.
+
+  Open-Meteo: https://open-meteo.com/en/terms
 
 
 ## EvenHub

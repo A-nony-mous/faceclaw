@@ -97,6 +97,7 @@ test('Weather uses the portable location provider and preserves NWS parsing', as
     './location-permissions': { hasLocationPermission: () => permission },
     './settings-store': { getStringSetting: (_key, fallback) => fallback, setStringSetting() {} },
     './location': { getCurrentLocation: async () => fix },
+    './reverse-geocode': { reverseGeocode: async () => null },
     '../version': { USER_AGENT: 'test' },
     '../util/http': { fetchWithUserAgent: async url => { requests.push(url); return { ok: true, json: async () =>
       url.includes('/points/') ? { properties: { forecast: 'https://fixture/forecast', relativeLocation: { properties: { city: 'San Francisco', state: 'CA' } } } }
