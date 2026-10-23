@@ -33,7 +33,16 @@ async function buildKotlin(platform, configuration = 'debug') {
   const wrapper = path.join(root, 'wear', process.platform === 'win32' ? 'gradlew.bat' : 'gradlew');
   console.log(`[kotlin] Building ${platform} (${configuration})`);
   await new Promise((resolve, reject) => {
-    const child = spawn(wrapper, [task, '--console=plain'], { cwd: kotlin, stdio: 'inherit' });
+    // A .bat cannot be exec'd directly: Node passes it to CreateProcess, which
+    // rejects it with EINVAL. cmd.exe has to run it, so the Windows path goes
+    // through a shell, quoted because the checkout may sit under a path with
+    // spaces in it.
+    const windows = process.platform === 'win32';
+    const child = spawn(windows ? `"${wrapper}"` : wrapper, [task, '--console=plain'], {
+      cwd: kotlin,
+      stdio: 'inherit',
+      shell: windows,
+    });
     child.on('error', reject);
     child.on('exit', (code, signal) => {
       if (code === 0) resolve();
