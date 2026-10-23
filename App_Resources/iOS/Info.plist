@@ -13,8 +13,7 @@
   <key>CFBundleDisplayName</key>
   <string>Faceclaw</string>
   <key>CFBundleShortVersionString</key>
-  <!-- Apple requires a numeric version; the app displays 0.8.3-rc1. -->
-  <string>0.8.3</string>
+  <string>0.8.4</string>
   <key>CFBundleVersion</key>
   <string>1</string>
   <key>LSRequiresIPhoneOS</key>
