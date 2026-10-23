@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.5 - Future
+
+### Bug fixes
+
+* Inverting Android notification-icons to indicate selectionis now gamma-correct
+
 ## 0.8.4 - 2026-10-17
 
 ### Features

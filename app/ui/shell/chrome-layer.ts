@@ -505,24 +505,55 @@ export function makeLetterWindowIcon(letter: string): ShellChromeWindow["drawIco
 }
 
 /**
+ * Perceptual gamma for inverting icon shades. The G2's levels are roughly
+ * linear in brightness while lightness is perceived roughly as brightness's
+ * 1/2.2 power, so flipping the levels themselves (15 - n) turns a dim stroke
+ * into one barely darker than the white box: level 1 would invert to 14.
+ */
+const ICON_INVERSION_GAMMA = 2.2;
+
+let invertedShadeLut: Uint8Array | null = null;
+
+/**
+ * Gray8 value → its perceptual negative, by the display level it packs to
+ * (so faint fringe values that show as black stay invisible on the white
+ * box): level 1 inverts to 7, and level 6 and up to 1 or 0. Written back as
+ * n*16, which packs to n, except that white is 255 (the box's fill) and
+ * black is SHELL_OPAQUE_BLACK (1) rather than 0, the surface's transparent
+ * color key.
+ */
+function invertedShades(): Uint8Array {
+  if (!invertedShadeLut) {
+    invertedShadeLut = new Uint8Array(256);
+    for (let value = 1; value < 256; value++) {
+      const lightness = Math.pow(grayToNibble(value) / 15, 1 / ICON_INVERSION_GAMMA);
+      const level = Math.round(15 * Math.pow(1 - lightness, ICON_INVERSION_GAMMA));
+      invertedShadeLut[value] = level === 0 ? SHELL_OPAQUE_BLACK : level === 15 ? 255 : level * 16;
+    }
+  }
+  return invertedShadeLut;
+}
+
+/**
  * Inverted (black-on-white) variant of an icon raster, for the focused tab:
- * coverage becomes darkness, with full coverage mapping to SHELL_OPAQUE_BLACK
- * (1) rather than 0, since 0 is the surface's transparent color key. Memoized
- * per source object so the variant is a stable image the texture cache can
- * key on (mode-13's inverse LUT can't reproduce this mapping exactly, so it
- * is simply a separate cached image). Deferred draws (an app widget's text)
- * are baked in first, to be inverted with the rest.
+ * each shade becomes its perceptual negative (invertedShades), so full
+ * coverage is SHELL_OPAQUE_BLACK. Memoized per source object so the variant
+ * is a stable image the texture cache can key on (mode-13's inverse LUT can't
+ * reproduce this mapping, so it is simply a separate cached image). Deferred
+ * draws (an app widget's text) are baked in first, to be inverted with the
+ * rest.
  */
 const invertedIconCache = new WeakMap<GrayImage, GrayImage>();
 function invertedIcon(icon: GrayImage): GrayImage {
   let inverted = invertedIconCache.get(icon);
   if (!inverted) {
     const flat = icon.withDrawsBaked();
+    const shades = invertedShades();
     inverted = new GrayImage(icon.width, icon.height, 0);
     for (let i = 0; i < flat.pixels.length; i++) {
       const coverage = flat.pixels[i]!;
       if (coverage > 0) {
-        inverted.pixels[i] = Math.max(SHELL_OPAQUE_BLACK, 255 - coverage);
+        inverted.pixels[i] = shades[coverage]!;
       }
     }
     invertedIconCache.set(icon, inverted);
