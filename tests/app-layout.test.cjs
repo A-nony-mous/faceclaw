@@ -782,10 +782,10 @@ test('a notification the switcher selects sits in a box, filled with its icon in
   const iconsLeft = 608 - 56 - 8 - 8 - 3 * 28 + 4, iconY = 366 + 7, n1 = iconsLeft + 28;
   const at = (p, x, y) => p.image.withDrawsBaked().pixels[(y - p.y) * p.image.width + x - p.x];
   // The box: 2px either side of the icon, 1px above and below, white; the
-  // icon inside it inverted; its neighbours as ever.
+  // icon inside it inverted (bright, so to black); its neighbours as ever.
   assert.deepEqual([at(status, n1 - 2, iconY + 12), at(status, n1 + 25, iconY + 12), at(status, n1 + 12, iconY - 1)], [255, 255, 255]);
   assert.equal(at(status, n1 + 12, iconY - 2), 1);
-  assert.deepEqual([at(status, n1 + 5, iconY + 5), at(status, iconsLeft + 5, iconY + 5)], [55, 200]);
+  assert.deepEqual([at(status, n1 + 5, iconY + 5), at(status, iconsLeft + 5, iconY + 5)], [1, 200]);
   // No window is selected: the separator runs unbroken over the windows.
   assert.equal(at(row, 50, 366), 40);
   // Mirror touches find the icons by their boxes, which tile the icons' run.
@@ -812,9 +812,9 @@ test('an app widget the switcher selects sits in a box as a notification does, a
   const g = geometry();
   g.settings.appSwitcherPositionSetting.value = 'bottom';
   g.settings.statusBarPositionSetting.value = 'bottom';
-  // A 30x20 widget, its text a deferred draw, and a 12x16 one.
+  // A faint 30x20 widget, its bright text a deferred draw, and a 12x16 one.
   const wide = new graphics.GrayImage(30, 20, 0);
-  wide.fillRect(0, 0, 30, 20, 180);
+  wide.fillRect(0, 0, 30, 20, 16);
   wide.drawImage(new graphics.GrayImage(4, 4, 220), 10, 8);
   const small = new graphics.GrayImage(12, 16, 160);
   const { chrome, state } = chromeLayer(g, { notifications: 2, windows: 2,
@@ -831,11 +831,12 @@ test('an app widget the switcher selects sits in a box as a notification does, a
   const at = (p, x, y) => p.image.withDrawsBaked().pixels[(y - p.y) * p.image.width + x - p.x];
   // The box: 2px either side, as tall as a notification's (rows 1..26 of
   // the layout) whatever the widget's height; white, with the widget
-  // inverted inside it, its deferred draw too.
+  // inverted inside it, its deferred draw too. The inversion is perceptual:
+  // the faint fill (level 1) becomes mid-gray level 7, the bright text black.
   assert.deepEqual([at(status, wideLeft - 2, 366 + 5 + 14), at(status, wideLeft + 31, 366 + 5 + 14),
     at(status, wideLeft + 15, 366 + 5 + 1), at(status, wideLeft + 15, 366 + 5 + 26)], [255, 255, 255, 255]);
   assert.equal(at(status, wideLeft + 15, 366 + 5 + 27), 1);
-  assert.deepEqual([at(status, wideLeft + 2, wideTop + 2), at(status, wideLeft + 11, wideTop + 9)], [75, 35]);
+  assert.deepEqual([at(status, wideLeft + 2, wideTop + 2), at(status, wideLeft + 11, wideTop + 9)], [112, 1]);
   assert.equal(at(status, smallLeft + 2, 366 + 5 + 8), 160);
   // Mirror touches find widgets by their boxes too.
   assert.deepEqual({ ...chrome.statusItemAt(wideLeft - 1, 380) }, { kind: 'widget', key: 'nightscout' });
@@ -843,14 +844,14 @@ test('an app widget the switcher selects sits in a box as a notification does, a
   // With its window focused instead, an outline round the plain widget.
   state.focus = 'window';
   [, status] = chrome.paintParts();
-  assert.deepEqual([at(status, wideLeft - 2, 366 + 5 + 14), at(status, wideLeft + 2, wideTop + 2)], [150, 180]);
+  assert.deepEqual([at(status, wideLeft - 2, 366 + 5 + 14), at(status, wideLeft + 2, wideTop + 2)], [150, 16]);
   // In the top bar likewise, the notifications still before the widgets
   // though drawn after them; barTop=78.
   g.settings.statusBarPositionSetting.value = 'top';
   const [bar] = chrome.paintParts();
   assert.deepEqual(Array.from(chrome.statusItems(), (item) => item.key), ['n0', 'n1', 'nightscout', 'timer']);
   const barWideLeft = 608 - 10 - 12 - 10 - 30;
-  assert.deepEqual([at(bar, barWideLeft - 2, 78 + 14), at(bar, barWideLeft + 2, 78 + 6)], [150, 180]);
+  assert.deepEqual([at(bar, barWideLeft - 2, 78 + 14), at(bar, barWideLeft + 2, 78 + 6)], [150, 16]);
 });
 
 test('with the selection out on a notification, the windows stay scrolled as they were', () => {
